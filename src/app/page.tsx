@@ -1,7 +1,24 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { signIn, signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
+import {
+  BookmarkPlus,
+  CalendarDays,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  FileText,
+  ListChecks,
+  Save,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  Target,
+  X,
+} from "lucide-react";
 
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
 import {
@@ -14,10 +31,8 @@ import {
 import type {
   ClaimMatch,
   ClaimMatchSearchResponse,
-  EnhancedQueryItem,
   SavedCitation,
   SavedSource,
-  SearchHistoryItem,
   Source,
 } from "@/types/domain";
 
@@ -62,44 +77,10 @@ interface CitationResponse {
   };
 }
 
-interface SignUpResponse {
-  ok: boolean;
-  data?: {
-    message: string;
-  };
-  error?: {
-    code: string;
-    message: string;
-  };
-}
-
 interface SavedSourcesResponse {
   ok: boolean;
   data?: {
     items: SavedSource[];
-  };
-  error?: {
-    code: string;
-    message: string;
-  };
-}
-
-interface SavedCitationsResponse {
-  ok: boolean;
-  data?: {
-    items: SavedCitation[];
-  };
-  error?: {
-    code: string;
-    message: string;
-  };
-}
-
-interface HistoryResponse {
-  ok: boolean;
-  data?: {
-    searchHistory: SearchHistoryItem[];
-    enhancedQueries: EnhancedQueryItem[];
   };
   error?: {
     code: string;
@@ -133,6 +114,12 @@ interface BatchCitationItem {
   sourceId: string;
   sourceTitle: string;
   citationText: string;
+  style: CitationStyle;
+}
+
+interface GeneratedCitation {
+  citationText: string;
+  style: CitationStyle;
 }
 
 interface ResearchPlanState {
@@ -146,9 +133,15 @@ interface ResearchPlanState {
 const MODE_HELP: Record<StartMode, string> = {
   "regular-query": "Search for sources directly by topic.",
   "query-to-research-plan":
-    "Start with a topic. In a later step, this mode will suggest refined research queries.",
+    "Turn a broad topic into focused research queries before searching.",
   "claim-to-source":
-    "Start from a claim or thesis statement. In a later step, this mode will rank source matches.",
+    "Rank sources against a claim or thesis statement.",
+};
+
+const MODE_ICON_MAP: Record<StartMode, typeof Search> = {
+  "regular-query": Search,
+  "query-to-research-plan": Sparkles,
+  "claim-to-source": Target,
 };
 
 const DEFAULT_RESULTS_LIMIT = 15;
@@ -178,15 +171,6 @@ function formatAuthors(authors: string[]) {
     return "Unknown authors";
   }
   return authors.join(", ");
-}
-
-function formatHistoryTimestamp(isoValue: string) {
-  const parsed = new Date(isoValue);
-  if (Number.isNaN(parsed.getTime())) {
-    return isoValue;
-  }
-
-  return parsed.toLocaleString();
 }
 
 function getKeywordsFromTitle(title: string) {
@@ -229,7 +213,7 @@ function normalizeResultsLimit(value: number) {
 }
 
 export default function Home() {
-  const { data: session, status: sessionStatus } = useSession();
+  const { status: sessionStatus } = useSession();
   const [query, setQuery] = useState("");
   const [startMode, setStartMode] = useState<StartMode>(START_MODE_VALUES[0]);
   const [results, setResults] = useState<Source[]>([]);
@@ -248,7 +232,9 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
   const [expandedSourceIds, setExpandedSourceIds] = useState<string[]>([]);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>("MLA");
-  const [citationTextsBySource, setCitationTextsBySource] = useState<Record<string, string>>({});
+  const [citationTextsBySource, setCitationTextsBySource] = useState<
+    Record<string, GeneratedCitation>
+  >({});
   const [citationErrorsBySource, setCitationErrorsBySource] = useState<Record<string, string>>({});
   const [citationLoadingSourceId, setCitationLoadingSourceId] = useState<string | null>(null);
   const [copyStatusBySource, setCopyStatusBySource] = useState<
@@ -264,27 +250,8 @@ export default function Home() {
   );
   const [batchSaveStatus, setBatchSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [batchSaveError, setBatchSaveError] = useState<string | null>(null);
-  const [signUpEmail, setSignUpEmail] = useState("");
-  const [signUpPassword, setSignUpPassword] = useState("");
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [authMessage, setAuthMessage] = useState<string | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [isSigningUp, setIsSigningUp] = useState(false);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [savedSources, setSavedSources] = useState<SavedSource[]>([]);
-  const [savedCitations, setSavedCitations] = useState<SavedCitation[]>([]);
-  const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
-  const [enhancedQueries, setEnhancedQueries] = useState<EnhancedQueryItem[]>([]);
-  const [isAccountDataLoading, setIsAccountDataLoading] = useState(false);
   const [accountDataError, setAccountDataError] = useState<string | null>(null);
-  const [isDeleteAccountLoading, setIsDeleteAccountLoading] = useState(false);
-  const [isClearingAllSavedData, setIsClearingAllSavedData] = useState(false);
-  const [isClearingSearchHistory, setIsClearingSearchHistory] = useState(false);
-  const [isClearingEnhancedQueries, setIsClearingEnhancedQueries] = useState(false);
-  const [isClearingSavedSources, setIsClearingSavedSources] = useState(false);
-  const [isClearingSavedCitations, setIsClearingSavedCitations] = useState(false);
   const [savingSourceIds, setSavingSourceIds] = useState<string[]>([]);
   const [savingCitationSourceIds, setSavingCitationSourceIds] = useState<string[]>([]);
   const [researchPlan, setResearchPlan] = useState<ResearchPlanState | null>(null);
@@ -357,6 +324,8 @@ export default function Home() {
     () => sortedResults.filter((source) => selectedSourceIds.includes(source.id)),
     [selectedSourceIds, sortedResults]
   );
+  const canGoPrevious = resultsPage > 1;
+  const canGoNext = resultsHasMore || resultsPage < totalResultPages;
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -377,14 +346,11 @@ export default function Home() {
   useEffect(() => {
     if (sessionStatus !== "authenticated") {
       setSavedSources([]);
-      setSavedCitations([]);
-      setSearchHistory([]);
-      setEnhancedQueries([]);
       setAccountDataError(null);
       return;
     }
 
-    void loadAccountData();
+    void loadSavedSources();
   }, [sessionStatus]);
 
   useEffect(() => {
@@ -405,51 +371,29 @@ export default function Home() {
     setResultsPage(1);
   }, [startMode]);
 
-  async function loadAccountData() {
-    setIsAccountDataLoading(true);
+  async function loadSavedSources() {
     setAccountDataError(null);
 
     try {
-      const [savedSourcesResponse, savedCitationsResponse, historyResponse] = await Promise.all([
-        fetch("/api/saved-sources"),
-        fetch("/api/saved-citations"),
-        fetch("/api/history"),
-      ]);
-
+      const savedSourcesResponse = await fetch("/api/saved-sources");
       const savedSourcesPayload = (await savedSourcesResponse.json()) as SavedSourcesResponse;
-      const savedCitationsPayload =
-        (await savedCitationsResponse.json()) as SavedCitationsResponse;
-      const historyPayload = (await historyResponse.json()) as HistoryResponse;
 
       if (
         !savedSourcesResponse.ok ||
         !savedSourcesPayload.ok ||
-        !savedSourcesPayload.data ||
-        !savedCitationsResponse.ok ||
-        !savedCitationsPayload.ok ||
-        !savedCitationsPayload.data ||
-        !historyResponse.ok ||
-        !historyPayload.ok ||
-        !historyPayload.data
+        !savedSourcesPayload.data
       ) {
         throw new Error(
           savedSourcesPayload.error?.message ||
-            savedCitationsPayload.error?.message ||
-            historyPayload.error?.message ||
-            "Unable to load account data."
+            "Unable to load saved sources."
         );
       }
 
       setSavedSources(savedSourcesPayload.data.items);
-      setSavedCitations(savedCitationsPayload.data.items);
-      setSearchHistory(historyPayload.data.searchHistory);
-      setEnhancedQueries(historyPayload.data.enhancedQueries);
     } catch (error) {
       setAccountDataError(
-        error instanceof Error ? error.message : "Unable to load account data right now."
+        error instanceof Error ? error.message : "Unable to load saved sources right now."
       );
-    } finally {
-      setIsAccountDataLoading(false);
     }
   }
 
@@ -483,6 +427,7 @@ export default function Home() {
         );
         return [savedItem, ...withoutExisting];
       });
+      window.dispatchEvent(new Event("saved-data-changed"));
     } catch (error) {
       setAccountDataError(error instanceof Error ? error.message : "Unable to save source.");
     } finally {
@@ -495,8 +440,8 @@ export default function Home() {
       return;
     }
 
-    const citationText = citationTextsBySource[source.id] ?? "";
-    if (!citationText) {
+    const citation = citationTextsBySource[source.id];
+    if (!citation?.citationText) {
       setAccountDataError("Generate a citation before saving it.");
       return;
     }
@@ -513,8 +458,8 @@ export default function Home() {
         body: JSON.stringify({
           sourceId: source.id,
           sourceTitle: source.title,
-          style: citationStyle,
-          citationText,
+          style: citation.style,
+          citationText: citation.citationText,
         }),
       });
 
@@ -523,286 +468,11 @@ export default function Home() {
         throw new Error(payload.error?.message || "Unable to save citation.");
       }
 
-      const savedItem = payload.data.item;
-
-      setSavedCitations((current) => [savedItem, ...current]);
+      window.dispatchEvent(new Event("saved-data-changed"));
     } catch (error) {
       setAccountDataError(error instanceof Error ? error.message : "Unable to save citation.");
     } finally {
       setSavingCitationSourceIds((current) => current.filter((id) => id !== source.id));
-    }
-  }
-
-  async function deleteSavedSourceItem(itemId: string) {
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch(`/api/saved-sources/${encodeURIComponent(itemId)}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to delete saved source.");
-      }
-
-      setSavedSources((current) => current.filter((item) => item.id !== itemId));
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to delete saved source."
-      );
-    }
-  }
-
-  async function deleteSavedCitationItem(itemId: string) {
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch(`/api/saved-citations/${encodeURIComponent(itemId)}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to delete saved citation.");
-      }
-
-      setSavedCitations((current) => current.filter((item) => item.id !== itemId));
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to delete saved citation."
-      );
-    }
-  }
-
-  async function deleteHistoryItem(itemId: string, type: "search" | "enhanced") {
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch(
-        `/api/history/${encodeURIComponent(itemId)}?type=${encodeURIComponent(type)}`,
-        {
-          method: "DELETE",
-        }
-      );
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to delete history item.");
-      }
-
-      if (type === "search") {
-        setSearchHistory((current) => current.filter((item) => item.id !== itemId));
-        return;
-      }
-
-      setEnhancedQueries((current) => current.filter((item) => item.id !== itemId));
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to delete history item."
-      );
-    }
-  }
-
-  async function clearAllSavedDataAndHistory() {
-    setIsClearingAllSavedData(true);
-    setAccountDataError(null);
-
-    try {
-      const [historyResponse, sourcesResponse, citationsResponse] = await Promise.all([
-        fetch("/api/history?type=all", {
-          method: "DELETE",
-        }),
-        fetch("/api/saved-sources", {
-          method: "DELETE",
-        }),
-        fetch("/api/saved-citations", {
-          method: "DELETE",
-        }),
-      ]);
-
-      if (!historyResponse.ok || !sourcesResponse.ok || !citationsResponse.ok) {
-        const [historyPayload, sourcesPayload, citationsPayload] = await Promise.all([
-          historyResponse.json().catch(() => null),
-          sourcesResponse.json().catch(() => null),
-          citationsResponse.json().catch(() => null),
-        ]);
-
-        const firstMessage =
-          (historyPayload as { error?: { message?: string } } | null)?.error?.message ||
-          (sourcesPayload as { error?: { message?: string } } | null)?.error?.message ||
-          (citationsPayload as { error?: { message?: string } } | null)?.error?.message;
-
-        throw new Error(firstMessage || "Unable to clear all saved data and history.");
-      }
-
-      setSearchHistory([]);
-      setEnhancedQueries([]);
-      setSavedSources([]);
-      setSavedCitations([]);
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to clear all saved data and history."
-      );
-    } finally {
-      setIsClearingAllSavedData(false);
-    }
-  }
-
-  async function clearSearchHistoryList() {
-    setIsClearingSearchHistory(true);
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch("/api/history?type=search", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to clear search history.");
-      }
-
-      setSearchHistory([]);
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to clear search history."
-      );
-    } finally {
-      setIsClearingSearchHistory(false);
-    }
-  }
-
-  async function clearEnhancedQueryList() {
-    setIsClearingEnhancedQueries(true);
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch("/api/history?type=enhanced", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to clear enhanced queries.");
-      }
-
-      setEnhancedQueries([]);
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to clear enhanced queries."
-      );
-    } finally {
-      setIsClearingEnhancedQueries(false);
-    }
-  }
-
-  async function clearSavedSourceList() {
-    setIsClearingSavedSources(true);
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch("/api/saved-sources", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to clear saved sources.");
-      }
-
-      setSavedSources([]);
-    } catch (error) {
-      setAccountDataError(error instanceof Error ? error.message : "Unable to clear saved sources.");
-    } finally {
-      setIsClearingSavedSources(false);
-    }
-  }
-
-  async function clearSavedCitationList() {
-    setIsClearingSavedCitations(true);
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch("/api/saved-citations", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to clear saved citations.");
-      }
-
-      setSavedCitations([]);
-    } catch (error) {
-      setAccountDataError(
-        error instanceof Error ? error.message : "Unable to clear saved citations."
-      );
-    } finally {
-      setIsClearingSavedCitations(false);
-    }
-  }
-
-  async function deleteAccount() {
-    if (!window.confirm("Delete your account and all saved data permanently?")) {
-      return;
-    }
-
-    setIsDeleteAccountLoading(true);
-    setAccountDataError(null);
-
-    try {
-      const response = await fetch("/api/account", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json()) as {
-          error?: {
-            message?: string;
-          };
-        };
-        throw new Error(payload.error?.message || "Unable to delete account.");
-      }
-
-      await signOut({ redirect: false });
-      setAuthMessage("Account deleted successfully.");
-      setSavedSources([]);
-      setSavedCitations([]);
-      setSearchHistory([]);
-      setEnhancedQueries([]);
-    } catch (error) {
-      setAccountDataError(error instanceof Error ? error.message : "Unable to delete account.");
-    } finally {
-      setIsDeleteAccountLoading(false);
     }
   }
 
@@ -1111,6 +781,18 @@ export default function Home() {
     void performSearch(trimmedQuery, 1, resultsLimit);
   }, [debouncedQuery, performSearch, requestClaimMatches, resultsLimit, startMode]);
 
+  function changeCitationStyle(nextStyle: CitationStyle) {
+    setCitationStyle(nextStyle);
+    setCitationTextsBySource({});
+    setCitationErrorsBySource({});
+    setCopyStatusBySource({});
+    setBatchCitations([]);
+    setBatchCitationError(null);
+    setBatchCopyStatus("idle");
+    setBatchSaveStatus("idle");
+    setBatchSaveError(null);
+  }
+
   async function generateCitationForSource(source: Source) {
     setCitationLoadingSourceId(source.id);
     setCitationErrorsBySource((current) => ({ ...current, [source.id]: "" }));
@@ -1133,12 +815,20 @@ export default function Home() {
         throw new Error(payload.error?.message || "Citation generation failed.");
       }
 
+      const citationData = payload.data;
       setCitationTextsBySource((current) => ({
         ...current,
-        [source.id]: payload.data?.citationText ?? "",
+        [source.id]: {
+          citationText: citationData.citationText,
+          style: citationData.style,
+        },
       }));
     } catch (error) {
-      setCitationTextsBySource((current) => ({ ...current, [source.id]: "" }));
+      setCitationTextsBySource((current) => {
+        const rest = { ...current };
+        delete rest[source.id];
+        return rest;
+      });
       setCitationErrorsBySource((current) => ({
         ...current,
         [source.id]:
@@ -1150,7 +840,7 @@ export default function Home() {
   }
 
   async function copyCitationForSource(sourceId: string) {
-    const citationText = citationTextsBySource[sourceId] ?? "";
+    const citationText = citationTextsBySource[sourceId]?.citationText ?? "";
     if (!citationText) {
       return;
     }
@@ -1215,6 +905,7 @@ export default function Home() {
           sourceId: source.id,
           sourceTitle: source.title,
           citationText: payload.data.citationText,
+          style: payload.data.style,
         } satisfies BatchCitationItem;
       });
 
@@ -1252,7 +943,7 @@ export default function Home() {
     setAccountDataError(null);
 
     try {
-      const savedItems = await Promise.all(
+      await Promise.all(
         batchCitations.map(async (item) => {
           const response = await fetch("/api/saved-citations", {
             method: "POST",
@@ -1262,7 +953,7 @@ export default function Home() {
             body: JSON.stringify({
               sourceId: item.sourceId,
               sourceTitle: item.sourceTitle,
-              style: citationStyle,
+              style: item.style,
               citationText: item.citationText,
             }),
           });
@@ -1276,11 +967,7 @@ export default function Home() {
         })
       );
 
-      setSavedCitations((current) => {
-        const incomingById = new Map(savedItems.map((item) => [item.id, item]));
-        const rest = current.filter((item) => !incomingById.has(item.id));
-        return [...savedItems, ...rest];
-      });
+      window.dispatchEvent(new Event("saved-data-changed"));
       setBatchSaveStatus("success");
     } catch (error) {
       const message =
@@ -1308,229 +995,75 @@ export default function Home() {
     }
   }
 
-  async function onSignUpSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    setIsSigningUp(true);
-    setAuthError(null);
-    setAuthMessage(null);
-
-    try {
-      const response = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email: signUpEmail,
-          password: signUpPassword,
-        }),
-      });
-
-      const payload = (await response.json()) as SignUpResponse;
-      if (!response.ok || !payload.ok || !payload.data) {
-        throw new Error(payload.error?.message || "Sign up failed.");
-      }
-
-      setAuthMessage(payload.data.message);
-      setSignUpPassword("");
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Unable to sign up right now.");
-    } finally {
-      setIsSigningUp(false);
-    }
-  }
-
-  async function onLoginSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    setIsLoggingIn(true);
-    setAuthError(null);
-    setAuthMessage(null);
-
-    try {
-      const result = await signIn("credentials", {
-        email: loginEmail,
-        password: loginPassword,
-        redirect: false,
-      });
-
-      if (!result || result.error) {
-        throw new Error("Login failed. Ensure your email is verified and credentials are correct.");
-      }
-
-      setAuthMessage("Logged in successfully.");
-      setLoginPassword("");
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Unable to log in right now.");
-    } finally {
-      setIsLoggingIn(false);
-    }
-  }
-
-  async function onLogout() {
-    setIsLoggingOut(true);
-    setAuthError(null);
-    setAuthMessage(null);
-
-    try {
-      await signOut({ redirect: false });
-      setAuthMessage("Logged out successfully.");
-    } catch {
-      setAuthError("Unable to log out right now.");
-    } finally {
-      setIsLoggingOut(false);
-    }
-  }
-
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-4 py-10 sm:px-6 lg:px-8">
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold text-slate-900">Account</h2>
+    <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
+      <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <div className="mx-auto max-w-3xl text-center">
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+            AI Citation Finder &amp; Generator
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
+            Search academic sources, compare results, and generate citation-ready references.
+          </p>
+        </div>
 
-        {sessionStatus === "authenticated" ? (
-          <div className="mt-4 space-y-3">
-            <p className="text-sm text-slate-700">
-              Signed in as <span className="font-semibold text-slate-900">{session.user.email}</span>
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  void loadAccountData();
-                }}
-                disabled={isAccountDataLoading}
-                className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isAccountDataLoading ? "Refreshing..." : "Refresh account data"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void onLogout();
-                }}
-                disabled={isLoggingOut}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isLoggingOut ? "Logging out..." : "Log out"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void deleteAccount();
-                }}
-                disabled={isDeleteAccountLoading}
-                className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isDeleteAccountLoading ? "Deleting account..." : "Delete account"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-4 grid gap-6 md:grid-cols-2">
-            <form className="space-y-3" onSubmit={onSignUpSubmit}>
-              <h3 className="text-sm font-semibold text-slate-900">Sign up</h3>
-              <input
-                type="email"
-                value={signUpEmail}
-                onChange={(event) => setSignUpEmail(event.target.value)}
-                placeholder="Email"
-                required
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
-              />
-              <input
-                type="password"
-                value={signUpPassword}
-                onChange={(event) => setSignUpPassword(event.target.value)}
-                placeholder="Password (min 8 characters)"
-                required
-                minLength={8}
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
-              />
-              <button
-                type="submit"
-                disabled={isSigningUp}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isSigningUp ? "Creating account..." : "Create account"}
-              </button>
-            </form>
-
-            <form className="space-y-3" onSubmit={onLoginSubmit}>
-              <h3 className="text-sm font-semibold text-slate-900">Log in</h3>
-              <input
-                type="email"
-                value={loginEmail}
-                onChange={(event) => setLoginEmail(event.target.value)}
-                placeholder="Email"
-                required
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
-              />
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(event) => setLoginPassword(event.target.value)}
-                placeholder="Password"
-                required
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
-              />
-              <button
-                type="submit"
-                disabled={isLoggingIn}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isLoggingIn ? "Logging in..." : "Log in"}
-              </button>
-            </form>
-          </div>
-        )}
-
-        {authMessage ? <p className="mt-4 text-sm text-emerald-700">{authMessage}</p> : null}
-        {authError ? <p className="mt-4 text-sm text-rose-700">{authError}</p> : null}
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">
-          AI Citation Finder &amp; Generator
-        </h1>
-        <p className="mt-3 max-w-2xl text-slate-700">
-          Discover credible academic sources with OpenAlex, then open a source
-          to summarize and cite.
-        </p>
-
-        <form className="mt-6 space-y-5" onSubmit={onSubmit}>
+        <form className="mx-auto mt-8 max-w-4xl space-y-7" onSubmit={onSubmit}>
           <fieldset>
-            <legend className="text-sm font-semibold text-slate-900">Start mode</legend>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3" role="radiogroup" aria-required>
-              {START_MODES.map((mode) => (
-                <label
-                  key={mode.value}
-                  className="flex cursor-pointer gap-3 rounded-xl border border-slate-200 p-3 hover:border-slate-300"
-                >
-                  <input
-                    type="radio"
-                    name="startMode"
-                    value={mode.value}
-                    checked={startMode === mode.value}
-                    onChange={() => setStartMode(mode.value)}
-                    className="mt-1 h-4 w-4"
-                    required
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-900">{mode.label}</span>
-                    <span className="mt-1 block text-xs text-slate-600">{mode.description}</span>
-                  </span>
-                </label>
-              ))}
+            <legend className="mx-auto text-center text-sm font-semibold text-slate-950">
+              Start mode
+            </legend>
+            <div className="mt-4 grid gap-3 md:grid-cols-3" role="radiogroup" aria-required>
+              {START_MODES.map((mode) => {
+                const ModeIcon = MODE_ICON_MAP[mode.value];
+                const isSelected = startMode === mode.value;
+
+                return (
+                  <label
+                    key={mode.value}
+                    className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition ${
+                      isSelected
+                        ? "border-slate-900 bg-slate-950 text-white shadow-sm"
+                        : "border-slate-200 bg-white text-slate-900 hover:border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="startMode"
+                      value={mode.value}
+                      checked={isSelected}
+                      onChange={() => setStartMode(mode.value)}
+                      className="sr-only"
+                      required
+                    />
+                    <span
+                      className={`grid h-10 w-10 shrink-0 place-items-center rounded-md ${
+                        isSelected ? "bg-white/15 text-white" : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      <ModeIcon aria-hidden className="h-5 w-5" />
+                    </span>
+                    <span className="text-left">
+                      <span className="block text-sm font-semibold">{mode.label}</span>
+                      <span
+                        className={`mt-1 block text-xs leading-5 ${
+                          isSelected ? "text-slate-200" : "text-slate-600"
+                        }`}
+                      >
+                        {mode.description}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           </fieldset>
 
-          <div>
-            <label htmlFor="query" className="block text-sm font-semibold text-slate-900">
+          <div className="text-center">
+            <label htmlFor="query" className="text-sm font-semibold text-slate-950">
               {startMode === "claim-to-source" ? "Claim or thesis" : "Topic"}
             </label>
             <p className="mt-1 text-xs text-slate-600">{modeHint}</p>
-            <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+            <div className="mx-auto mt-4 flex max-w-3xl flex-col gap-3 sm:flex-row">
               <input
                 id="query"
                 name="query"
@@ -1541,13 +1074,14 @@ export default function Home() {
                     ? "Example: Remote work improves software team productivity"
                     : "Example: effects of sleep deprivation on memory"
                 }
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
+                className="min-h-12 w-full rounded-md border border-slate-300 bg-white px-4 text-sm text-slate-950 outline-none ring-sky-500 transition focus:ring-2"
               />
               <button
                 type="submit"
                 disabled={isLoading || isPlanning || isClaimMatching}
-                className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
               >
+                <Search aria-hidden className="h-4 w-4" />
                 {isLoading
                   ? "Searching..."
                   : isPlanning
@@ -1721,194 +1255,6 @@ export default function Home() {
         </section>
       ) : null}
 
-      {sessionStatus === "authenticated" ? (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Saved data and history</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Manage saved sources, saved citations, and search history.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                void clearAllSavedDataAndHistory();
-              }}
-              disabled={isClearingAllSavedData}
-              className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {isClearingAllSavedData ? "Clearing all data..." : "Clear all saved data and history"}
-            </button>
-          </div>
-
-          {accountDataError ? <p className="mt-3 text-sm text-rose-700">{accountDataError}</p> : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-900">Search history ({searchHistory.length})</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void clearSearchHistoryList();
-                  }}
-                  disabled={isClearingSearchHistory || searchHistory.length === 0}
-                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isClearingSearchHistory ? "Deleting..." : "Delete all"}
-                </button>
-              </div>
-              {searchHistory.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-600">No saved search history yet.</p>
-              ) : (
-                <div className="mt-2 space-y-2">
-                  {searchHistory.map((item) => (
-                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
-                      <p className="text-xs font-semibold text-slate-900">{item.query}</p>
-                      <p className="mt-1 text-xs text-slate-600">{item.startMode}</p>
-                      <p className="text-xs text-slate-500">{formatHistoryTimestamp(item.createdAt)}</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void deleteHistoryItem(item.id, "search");
-                        }}
-                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-900">Saved sources ({savedSources.length})</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void clearSavedSourceList();
-                  }}
-                  disabled={isClearingSavedSources || savedSources.length === 0}
-                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isClearingSavedSources ? "Deleting..." : "Delete all"}
-                </button>
-              </div>
-              {savedSources.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-600">No saved sources yet.</p>
-              ) : (
-                <div className="mt-2 space-y-2">
-                  {savedSources.map((item) => (
-                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
-                      <p className="text-xs font-semibold text-slate-900">{item.title}</p>
-                      <p className="mt-1 text-xs text-slate-500">{formatHistoryTimestamp(item.createdAt)}</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void deleteSavedSourceItem(item.id);
-                        }}
-                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-900">
-                  Saved citations ({savedCitations.length})
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void clearSavedCitationList();
-                  }}
-                  disabled={isClearingSavedCitations || savedCitations.length === 0}
-                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isClearingSavedCitations ? "Deleting..." : "Delete all"}
-                </button>
-              </div>
-              {savedCitations.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-600">No saved citations yet.</p>
-              ) : (
-                <div className="mt-2 space-y-2">
-                  {savedCitations.map((item) => (
-                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
-                      <p className="text-xs font-semibold text-slate-900">{item.sourceTitle}</p>
-                      <p className="mt-1 text-xs text-slate-700">{item.citationText}</p>
-                      <p className="mt-1 text-xs text-slate-500">{item.style}</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void deleteSavedCitationItem(item.id);
-                        }}
-                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-          </div>
-
-          <article className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Enhanced queries ({enhancedQueries.length})
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  void clearEnhancedQueryList();
-                }}
-                disabled={isClearingEnhancedQueries || enhancedQueries.length === 0}
-                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isClearingEnhancedQueries ? "Deleting..." : "Delete all"}
-              </button>
-            </div>
-            {enhancedQueries.length === 0 ? (
-              <p className="mt-2 text-xs text-slate-600">No enhanced query history yet.</p>
-            ) : (
-              <div className="mt-2 space-y-2">
-                {enhancedQueries.map((item) => (
-                  <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
-                    <p className="text-xs font-semibold text-slate-900">{item.originalQuery}</p>
-                    <p className="mt-1 text-xs text-slate-700">{item.refinedQuestion}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {formatHistoryTimestamp(item.createdAt)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void deleteHistoryItem(item.id, "enhanced");
-                      }}
-                      className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-        </section>
-      ) : null}
-
-      {sessionStatus === "authenticated" && isAccountDataLoading ? (
-        <LoadingState title="Loading account data" message="Restoring saved sources and history." />
-      ) : null}
-
       {isLoading || isPlanning || isClaimMatching ? (
         <LoadingState
           title={
@@ -1963,27 +1309,41 @@ export default function Home() {
       ) : null}
 
       {!isLoading && !errorMessage && sortedResults.length > 0 ? (
-        <section className="grid gap-4">
-          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
-              <div className="space-y-1">
-                <p className="text-sm text-slate-700">
-                  Selected sources on this page: <span className="font-semibold text-slate-900">{selectedSources.length}</span>
-                </p>
-                <p className="text-xs text-slate-500">
-                  Showing page {resultsPage} of {totalResultPages} · {resultsTotalCount || results.length} total results
+        <section className="space-y-5">
+          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="grid h-9 w-9 place-items-center rounded-md bg-slate-950 text-white">
+                    <ListChecks aria-hidden className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-950">Search results</h2>
+                    <p className="text-sm text-slate-600">
+                      Page {resultsPage} of {totalResultPages} · {resultsTotalCount || results.length} total results
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-4 text-sm text-slate-700">
+                  Selected sources on this page:{" "}
+                  <span className="font-semibold text-slate-950">{selectedSources.length}</span>
                 </p>
               </div>
-              <div className="flex flex-col gap-3 sm:items-end">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="text-xs font-semibold text-slate-700" htmlFor="results-sort">
+
+              <div className="flex flex-col gap-3 lg:items-end">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label
+                    className="inline-flex items-center gap-2 text-sm font-semibold text-slate-700"
+                    htmlFor="results-sort"
+                  >
+                    <SlidersHorizontal aria-hidden className="h-4 w-4" />
                     Sort by
                   </label>
                   <select
                     id="results-sort"
                     value={resultSort}
                     onChange={(event) => setResultSort(event.target.value as ResultSortOption)}
-                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
+                    className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 outline-none ring-sky-500 focus:ring-2"
                   >
                     {RESULT_SORT_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -1991,7 +1351,7 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
-                  <label className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800">
+                  <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800">
                     <input
                       type="checkbox"
                       checked={openAccessOnly}
@@ -2001,42 +1361,45 @@ export default function Home() {
                     Open access only
                   </label>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {resultsPage > 1 ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void rerunCurrentQuery(resultsPage - 1, resultsLimit);
-                      }}
-                      disabled={isLoading || isClaimMatching}
-                      className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Previous
-                    </button>
-                  ) : null}
-                  {resultsHasMore || resultsPage < totalResultPages ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void rerunCurrentQuery(resultsPage + 1, resultsLimit);
-                      }}
-                      disabled={isLoading || isClaimMatching}
-                      className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Next
-                    </button>
-                  ) : null}
-                </div>
               </div>
             </div>
 
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-5 grid grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-slate-200 pt-5">
+              <button
+                type="button"
+                onClick={() => {
+                  void rerunCurrentQuery(resultsPage - 1, resultsLimit);
+                }}
+                disabled={!canGoPrevious || isLoading || isClaimMatching}
+                className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft aria-hidden className="h-4 w-4" />
+                Previous
+              </button>
+              <span className="text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Results
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void rerunCurrentQuery(resultsPage + 1, resultsLimit);
+                }}
+                disabled={!canGoNext || isLoading || isClaimMatching}
+                className="inline-flex w-fit items-center gap-2 justify-self-end rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight aria-hidden className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap gap-2">
-                  <button
+                <button
                   type="button"
-                    onClick={() => setSelectedSourceIds(sortedResults.map((source) => source.id))}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                  onClick={() => setSelectedSourceIds(sortedResults.map((source) => source.id))}
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
                 >
+                  <Check aria-hidden className="h-4 w-4" />
                   Select all
                 </button>
                 <button
@@ -2047,297 +1410,333 @@ export default function Home() {
                     setBatchCitationError(null);
                     setBatchCopyStatus("idle");
                   }}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
                 >
+                  <X aria-hidden className="h-4 w-4" />
                   Clear
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void generateBatchCitations();
-                  }}
-                  disabled={isBatchCitationLoading}
-                  className="rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {isBatchCitationLoading ? "Generating list..." : "Generate citation list"}
-                </button>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void generateBatchCitations();
+                }}
+                disabled={isBatchCitationLoading}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <FileText aria-hidden className="h-4 w-4" />
+                {isBatchCitationLoading ? "Generating list..." : "Generate citation list"}
+              </button>
             </div>
 
-            {batchCitationError ? (
-              <p className="mt-3 text-sm text-rose-700">{batchCitationError}</p>
-            ) : null}
+            {accountDataError ? <p className="mt-4 text-sm text-rose-700">{accountDataError}</p> : null}
+            {batchCitationError ? <p className="mt-4 text-sm text-rose-700">{batchCitationError}</p> : null}
 
             {batchCitations.length > 0 ? (
-              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  Alphabetical citation list ({citationStyle})
+                  Alphabetical citation list ({batchCitations[0]?.style ?? citationStyle})
                 </p>
-                <div className="mt-2 space-y-3 text-sm text-slate-800">
+                <div className="mt-3 space-y-3 text-sm leading-6 text-slate-800">
                   {batchCitations.map((item) => (
-                    <div key={item.sourceId}>
-                      <p>{item.citationText}</p>
-                    </div>
+                    <p key={item.sourceId}>{item.citationText}</p>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void copyBatchCitationList();
-                  }}
-                  className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
-                >
-                  Copy full citation list
-                </button>
-                {sessionStatus === "authenticated" ? (
+                <div className="mt-4 flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => {
-                      void saveBatchCitationsForUser();
+                      void copyBatchCitationList();
                     }}
-                    disabled={isBatchCitationSaving}
-                    className="mt-4 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                    className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
                   >
-                    {isBatchCitationSaving ? "Saving list..." : "Save citation list"}
+                    <Copy aria-hidden className="h-4 w-4" />
+                    Copy full citation list
                   </button>
-                ) : null}
+                  {sessionStatus === "authenticated" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void saveBatchCitationsForUser();
+                      }}
+                      disabled={isBatchCitationSaving}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <Save aria-hidden className="h-4 w-4" />
+                      {isBatchCitationSaving ? "Saving list..." : "Save citation list"}
+                    </button>
+                  ) : null}
+                </div>
                 {batchCopyStatus === "success" ? (
-                  <p className="mt-2 text-xs text-emerald-700">Citation list copied.</p>
+                  <p className="mt-3 text-xs text-emerald-700">Citation list copied.</p>
                 ) : null}
                 {batchCopyStatus === "error" ? (
-                  <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                  <p className="mt-3 text-xs text-rose-700">Copy failed. Please copy manually.</p>
                 ) : null}
                 {batchSaveStatus === "success" ? (
-                  <p className="mt-2 text-xs text-emerald-700">Citation list saved to Saved citations.</p>
+                  <p className="mt-3 text-xs text-emerald-700">Citation list saved to Saved citations.</p>
                 ) : null}
                 {batchSaveStatus === "error" && batchSaveError ? (
-                  <p className="mt-2 text-xs text-rose-700">{batchSaveError}</p>
+                  <p className="mt-3 text-xs text-rose-700">{batchSaveError}</p>
                 ) : null}
               </div>
             ) : null}
           </div>
 
-          {sortedResults.map((source) => (
-            <article
-              key={source.id}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <h2 className="text-lg font-semibold text-slate-900">{source.title}</h2>
-                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={selectedSourceIds.includes(source.id)}
-                    onChange={() => toggleSourceSelection(source.id)}
-                    className="h-4 w-4"
-                  />
-                  Select
-                </label>
-              </div>
+          {sortedResults.map((source) => {
+            const generatedCitation = citationTextsBySource[source.id];
+            const isExpanded = expandedSourceIds.includes(source.id);
+            const isSelected = selectedSourceIds.includes(source.id);
+            const isSaved = savedSourceOpenAlexIds.has(source.id);
 
-              {startMode === "claim-to-source" ? (() => {
-                const claimMatch = claimMatchBySourceId.get(source.id);
-                if (!claimMatch) {
-                  return null;
-                }
-
-                return (
-                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                    <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                      <span>Claim match</span>
-                      <span className="rounded-full bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
-                        Score {claimMatch.score.toFixed(0)}
-                      </span>
-                      <span className="rounded-full bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
-                        {claimMatch.confidence}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm text-slate-800">{claimMatch.rationale}</p>
-                  </div>
-                );
-              })() : null}
-
-              <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                <div>
-                  <dt className="font-semibold text-slate-900">Authors</dt>
-                  <dd>{formatAuthors(source.authors)}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">Publication date</dt>
-                  <dd>{formatPublicationDate(source.publicationDate)}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">Citation count</dt>
-                  <dd>{source.citationCount}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">External link</dt>
-                  <dd>
-                    {source.externalUrl ? (
-                      <a
-                        href={source.externalUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sky-700 underline underline-offset-2 hover:text-sky-900"
-                      >
-                        Open source
-                      </a>
-                    ) : (
-                      <span>Unavailable</span>
-                    )}
-                  </dd>
-                </div>
-              </dl>
-              <button
-                type="button"
-                onClick={() => {
-                  toggleSourceDetails(source.id);
-                }}
-                className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                aria-pressed={expandedSourceIds.includes(source.id)}
+            return (
+              <article
+                key={source.id}
+                className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:p-6"
               >
-                {expandedSourceIds.includes(source.id) ? "Close details" : "Open details"}
-              </button>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-xl font-semibold leading-7 text-slate-950">{source.title}</h2>
+                    {startMode === "claim-to-source" ? (() => {
+                      const claimMatch = claimMatchBySourceId.get(source.id);
+                      if (!claimMatch) {
+                        return null;
+                      }
 
-              {sessionStatus === "authenticated" ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void saveSourceForUser(source);
-                  }}
-                  disabled={savingSourceIds.includes(source.id)}
-                  className="mt-2 ml-2 rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {savingSourceIds.includes(source.id)
-                    ? "Saving source..."
-                    : savedSourceOpenAlexIds.has(source.id)
-                      ? "Source saved"
-                      : "Save source"}
-                </button>
-              ) : null}
+                      return (
+                        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                            <span>Claim match</span>
+                            <span className="rounded-md bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
+                              Score {claimMatch.score.toFixed(0)}
+                            </span>
+                            <span className="rounded-md bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
+                              {claimMatch.confidence}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm leading-6 text-slate-800">{claimMatch.rationale}</p>
+                        </div>
+                      );
+                    })() : null}
+                  </div>
+                  <label className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSourceSelection(source.id)}
+                      className="h-4 w-4"
+                    />
+                    Select
+                  </label>
+                </div>
 
-              {expandedSourceIds.includes(source.id) ? (
-                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <h3 className="text-base font-semibold text-slate-900">Source detail</h3>
-                  <p className="mt-2 text-sm text-slate-700">{buildMetadataSummary(source)}</p>
-
-                  <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                      <label
-                        className="block text-sm font-semibold text-slate-900"
-                        htmlFor={`citation-style-${source.id}`}
-                      >
-                        Citation style
-                        <select
-                          id={`citation-style-${source.id}`}
-                          className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900"
-                          value={citationStyle}
-                          onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                <dl className="mt-5 grid gap-4 border-y border-slate-200 py-5 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Authors</dt>
+                    <dd className="mt-1 leading-6">{formatAuthors(source.authors)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Publication date</dt>
+                    <dd className="mt-1 inline-flex items-center gap-2">
+                      <CalendarDays aria-hidden className="h-4 w-4 text-slate-400" />
+                      {formatPublicationDate(source.publicationDate)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Citation count</dt>
+                    <dd className="mt-1 font-semibold text-slate-950">{source.citationCount}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">External link</dt>
+                    <dd className="mt-1">
+                      {source.externalUrl ? (
+                        <a
+                          href={source.externalUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 font-semibold text-sky-700 hover:text-sky-900"
                         >
-                          {CITATION_STYLE_VALUES.map((style) => (
-                            <option key={style} value={style}>
-                              {style}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                          Open source
+                          <ExternalLink aria-hidden className="h-3.5 w-3.5" />
+                        </a>
+                      ) : (
+                        <span>Unavailable</span>
+                      )}
+                    </dd>
+                  </div>
+                </dl>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void generateCitationForSource(source);
-                        }}
-                        disabled={citationLoadingSourceId === source.id}
-                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-                      >
-                        {citationLoadingSourceId === source.id ? "Generating..." : "Generate citation"}
-                      </button>
-                    </div>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      toggleSourceDetails(source.id);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                    aria-pressed={isExpanded}
+                  >
+                    <FileText aria-hidden className="h-4 w-4" />
+                    {isExpanded ? "Close details" : "Open details"}
+                  </button>
 
-                    {citationErrorsBySource[source.id] ? (
-                      <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                        <p>{citationErrorsBySource[source.id]}</p>
+                  {sessionStatus === "authenticated" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void saveSourceForUser(source);
+                      }}
+                      disabled={savingSourceIds.includes(source.id) || isSaved}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isSaved ? (
+                        <Check aria-hidden className="h-4 w-4" />
+                      ) : (
+                        <BookmarkPlus aria-hidden className="h-4 w-4" />
+                      )}
+                      {savingSourceIds.includes(source.id)
+                        ? "Saving source..."
+                        : isSaved
+                          ? "Source saved"
+                          : "Save source"}
+                    </button>
+                  ) : null}
+                </div>
+
+                {isExpanded ? (
+                  <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-5">
+                    <h3 className="text-base font-semibold text-slate-950">Source detail</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">{buildMetadataSummary(source)}</p>
+
+                    <div className="mt-5 border-t border-slate-200 pt-5">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                        <label
+                          className="block text-sm font-semibold text-slate-950"
+                          htmlFor={`citation-style-${source.id}`}
+                        >
+                          Citation style
+                          <select
+                            id={`citation-style-${source.id}`}
+                            className="mt-2 block min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal text-slate-950 outline-none ring-sky-500 focus:ring-2 sm:w-48"
+                            value={citationStyle}
+                            onChange={(event) =>
+                              changeCitationStyle(event.target.value as CitationStyle)
+                            }
+                          >
+                            {CITATION_STYLE_VALUES.map((style) => (
+                              <option key={style} value={style}>
+                                {style}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
                         <button
                           type="button"
                           onClick={() => {
                             void generateCitationForSource(source);
                           }}
-                          className="mt-2 rounded bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600"
+                          disabled={citationLoadingSourceId === source.id}
+                          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
                         >
-                          Retry citation
+                          <FileText aria-hidden className="h-4 w-4" />
+                          {citationLoadingSourceId === source.id
+                            ? "Generating..."
+                            : `Generate ${citationStyle} citation`}
                         </button>
                       </div>
-                    ) : null}
 
-                    {citationTextsBySource[source.id] ? (
-                      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                          Style: {citationStyle}
-                        </p>
-                        <p className="mt-2 text-sm text-slate-800">{citationTextsBySource[source.id]}</p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void copyCitationForSource(source.id);
-                          }}
-                          className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
-                        >
-                          Copy citation
-                        </button>
-                        {copyStatusBySource[source.id] === "success" ? (
-                          <p className="mt-2 text-xs text-emerald-700">Copied to clipboard.</p>
-                        ) : null}
-                        {copyStatusBySource[source.id] === "error" ? (
-                          <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
-                        ) : null}
-                        {sessionStatus === "authenticated" ? (
+                      {citationErrorsBySource[source.id] ? (
+                        <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                          <p>{citationErrorsBySource[source.id]}</p>
                           <button
                             type="button"
                             onClick={() => {
-                              void saveCitationForUser(source);
+                              void generateCitationForSource(source);
                             }}
-                            disabled={savingCitationSourceIds.includes(source.id)}
-                            className="mt-2 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                            className="mt-3 rounded-md bg-rose-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-rose-600"
                           >
-                            {savingCitationSourceIds.includes(source.id)
-                              ? "Saving citation..."
-                              : "Save citation"}
+                            Retry citation
                           </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-            </article>
-          ))}
+                        </div>
+                      ) : null}
 
-          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {resultsPage > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void rerunCurrentQuery(resultsPage - 1, resultsLimit);
-                  }}
-                  disabled={isLoading || isClaimMatching}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Previous
-                </button>
-              ) : null}
-              {resultsHasMore || resultsPage < totalResultPages ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void rerunCurrentQuery(resultsPage + 1, resultsLimit);
-                  }}
-                  disabled={isLoading || isClaimMatching}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Next
-                </button>
-              ) : null}
+                      {generatedCitation ? (
+                        <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Style: {generatedCitation.style}
+                          </p>
+                          <p className="mt-3 text-sm leading-6 text-slate-800">
+                            {generatedCitation.citationText}
+                          </p>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void copyCitationForSource(source.id);
+                              }}
+                              className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                            >
+                              <Copy aria-hidden className="h-4 w-4" />
+                              Copy citation
+                            </button>
+                            {sessionStatus === "authenticated" ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void saveCitationForUser(source);
+                                }}
+                                disabled={savingCitationSourceIds.includes(source.id)}
+                                className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                              >
+                                <Save aria-hidden className="h-4 w-4" />
+                                {savingCitationSourceIds.includes(source.id)
+                                  ? "Saving citation..."
+                                  : "Save citation"}
+                              </button>
+                            ) : null}
+                          </div>
+                          {copyStatusBySource[source.id] === "success" ? (
+                            <p className="mt-3 text-xs text-emerald-700">Copied to clipboard.</p>
+                          ) : null}
+                          {copyStatusBySource[source.id] === "error" ? (
+                            <p className="mt-3 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  void rerunCurrentQuery(resultsPage - 1, resultsLimit);
+                }}
+                disabled={!canGoPrevious || isLoading || isClaimMatching}
+                className="inline-flex w-fit items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft aria-hidden className="h-4 w-4" />
+                Previous
+              </button>
+              <span className="text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Page {resultsPage}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void rerunCurrentQuery(resultsPage + 1, resultsLimit);
+                }}
+                disabled={!canGoNext || isLoading || isClaimMatching}
+                className="inline-flex w-fit items-center gap-2 justify-self-end rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight aria-hidden className="h-4 w-4" />
+              </button>
             </div>
           </div>
         </section>
