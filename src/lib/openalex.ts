@@ -1,5 +1,19 @@
 import type { Source } from "@/types/domain";
 
+interface OpenAlexSearchOptions {
+  page?: number;
+  perPage?: number;
+  signal?: AbortSignal;
+}
+
+interface OpenAlexSearchPageResult {
+  items: Source[];
+  totalCount: number;
+  page: number;
+  perPage: number;
+  hasMore: boolean;
+}
+
 interface OpenAlexAuthor {
   author?: {
     display_name?: string | null;
@@ -21,11 +35,109 @@ interface OpenAlexWork {
 
 interface OpenAlexResponse {
   results?: OpenAlexWork[];
+  meta?: {
+    count?: number | null;
+  } | null;
 }
+
+interface CacheEntry {
+  expiresAt: number;
+  value: OpenAlexSearchPageResult;
+}
+
+const OPENALEX_CACHE_TTL_MS = 60_000;
+const OPENALEX_TIMEOUT_MS = 10_000;
+const OPENALEX_RETRY_COUNT = 2;
+const openAlexCache = new Map<string, CacheEntry>();
 
 function toUnixDate(date: string): number {
   const timestamp = Date.parse(date);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function clampInteger(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
+}
+
+function isSafeHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeExternalUrl(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed && isSafeHttpUrl(trimmed)) {
+      return trimmed;
+    }
+  }
+
+  return "";
+}
+
+function buildCacheKey(query: string, page: number, perPage: number) {
+  return `${query.toLowerCase()}::${page}::${perPage}`;
+}
+
+function sleep(durationMs: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+}
+
+function isRetryableStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function fetchOpenAlex(url: URL, signal?: AbortSignal) {
+  for (let attempt = 0; attempt <= OPENALEX_RETRY_COUNT; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OPENALEX_TIMEOUT_MS);
+
+    const abortListener = () => controller.abort();
+    if (signal) {
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+        next: { revalidate: 60 },
+      });
+
+      if (!response.ok && attempt < OPENALEX_RETRY_COUNT && isRetryableStatus(response.status)) {
+        await sleep(250 * (attempt + 1));
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      if (attempt < OPENALEX_RETRY_COUNT && !controller.signal.aborted) {
+        await sleep(250 * (attempt + 1));
+        continue;
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+      if (signal) {
+        signal.removeEventListener("abort", abortListener);
+      }
+    }
+  }
+
+  throw new Error("OpenAlex request failed unexpectedly.");
 }
 
 function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
@@ -39,17 +151,40 @@ function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
     authors,
     publicationDate: work.publication_date ?? "",
     citationCount: work.cited_by_count ?? 0,
-    externalUrl:
-      work.primary_location?.landing_page_url ??
-      work.primary_location?.pdf_url ??
-      work.id ??
-      "",
+    externalUrl: normalizeExternalUrl(
+      work.primary_location?.landing_page_url,
+      work.primary_location?.pdf_url,
+      work.id
+    ),
   };
 }
 
-export async function searchOpenAlex(query: string, perPage = 25): Promise<Source[]> {
+export async function searchOpenAlexPage(
+  query: string,
+  options: OpenAlexSearchOptions = {}
+): Promise<OpenAlexSearchPageResult> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) {
+    return {
+      items: [],
+      totalCount: 0,
+      page: 1,
+      perPage: options.perPage ?? 25,
+      hasMore: false,
+    };
+  }
+
+  const perPage = clampInteger(options.perPage ?? 25, 1, 50);
+  const page = clampInteger(options.page ?? 1, 1, 20);
+  const cacheKey = buildCacheKey(trimmedQuery, page, perPage);
+  const cachedValue = openAlexCache.get(cacheKey);
+  if (cachedValue && cachedValue.expiresAt > Date.now()) {
+    return cachedValue.value;
+  }
+
   const url = new URL("https://api.openalex.org/works");
-  url.searchParams.set("search", query);
+  url.searchParams.set("search", trimmedQuery);
+  url.searchParams.set("page", String(page));
   url.searchParams.set("per-page", String(perPage));
   url.searchParams.set(
     "select",
@@ -64,12 +199,7 @@ export async function searchOpenAlex(query: string, perPage = 25): Promise<Sourc
     ].join(",")
   );
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-    next: { revalidate: 60 },
-  });
+  const response = await fetchOpenAlex(url, options.signal);
 
   if (!response.ok) {
     throw new Error(`OpenAlex request failed with status ${response.status}`);
@@ -78,28 +208,54 @@ export async function searchOpenAlex(query: string, perPage = 25): Promise<Sourc
   const payload = (await response.json()) as OpenAlexResponse;
   const works = payload.results ?? [];
 
-  return works
-    .map((work, index) => ({ work, index }))
-    .sort((a, b) => {
-      const relevanceA = a.work.relevance_score ?? 0;
-      const relevanceB = b.work.relevance_score ?? 0;
-      if (relevanceA !== relevanceB) {
-        return relevanceB - relevanceA;
-      }
+  const value: OpenAlexSearchPageResult = {
+    items: works
+      .map((work, index) => ({ work, index }))
+      .sort((a, b) => {
+        const relevanceA = a.work.relevance_score ?? 0;
+        const relevanceB = b.work.relevance_score ?? 0;
+        if (relevanceA !== relevanceB) {
+          return relevanceB - relevanceA;
+        }
 
-      const citedA = a.work.cited_by_count ?? 0;
-      const citedB = b.work.cited_by_count ?? 0;
-      if (citedA !== citedB) {
-        return citedB - citedA;
-      }
+        const citedA = a.work.cited_by_count ?? 0;
+        const citedB = b.work.cited_by_count ?? 0;
+        if (citedA !== citedB) {
+          return citedB - citedA;
+        }
 
-      const dateA = toUnixDate(a.work.publication_date ?? "");
-      const dateB = toUnixDate(b.work.publication_date ?? "");
-      if (dateA !== dateB) {
-        return dateB - dateA;
-      }
+        const dateA = toUnixDate(a.work.publication_date ?? "");
+        const dateB = toUnixDate(b.work.publication_date ?? "");
+        if (dateA !== dateB) {
+          return dateB - dateA;
+        }
 
-      return a.index - b.index;
-    })
-    .map(({ work }) => mapOpenAlexWorkToSource(work));
+        return a.index - b.index;
+      })
+      .map(({ work }) => mapOpenAlexWorkToSource(work)),
+    totalCount: payload.meta?.count ?? works.length,
+    page,
+    perPage,
+    hasMore: page * perPage < (payload.meta?.count ?? works.length),
+  };
+
+  openAlexCache.set(cacheKey, {
+    expiresAt: Date.now() + OPENALEX_CACHE_TTL_MS,
+    value,
+  });
+
+  return value;
+}
+
+export async function searchOpenAlex(
+  query: string,
+  perPage = 25,
+  options: Omit<OpenAlexSearchOptions, "perPage"> = {}
+): Promise<Source[]> {
+  const result = await searchOpenAlexPage(query, {
+    ...options,
+    perPage,
+  });
+
+  return result.items;
 }

@@ -82,6 +82,12 @@ function dedupeSources(sources: Source[]) {
 }
 
 export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const pageParam = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+  const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "15", 10);
+  const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 30) : 15;
+
   let body: ClaimMatchBody;
 
   try {
@@ -93,6 +99,10 @@ export async function POST(request: Request) {
   const claim = body.claim?.trim() ?? "";
   if (!claim) {
     return apiError("BAD_REQUEST", "Claim is required.", 400);
+  }
+
+  if (claim.length > 800) {
+    return apiError("BAD_REQUEST", "Claim is too long.", 400);
   }
 
   const claimTerms = buildKeywords(claim);
@@ -132,14 +142,24 @@ export async function POST(request: Request) {
         } satisfies ClaimMatch;
       })
       .sort((a, b) => b.score - a.score)
-      .slice(0, 15);
+      .slice(0, 50);
+
+    const pageStart = (page - 1) * limit;
+    const pageEnd = pageStart + limit;
+    const pagedMatches = matches.slice(pageStart, pageEnd);
+    const pagedSourceIds = new Set(pagedMatches.map((match) => match.sourceId));
+    const pagedSources = sources.filter((source) => pagedSourceIds.has(source.id));
 
     const responseBody: ClaimMatchSearchResponse = {
       originalClaim: claim,
       refinedQuestion,
       retrievalQueries,
       keywords: claimTerms,
-      sources: sources.sort((a, b) => {
+      page,
+      limit,
+      totalResults: matches.length,
+      hasMore: pageEnd < matches.length,
+      sources: pagedSources.sort((a, b) => {
         const matchA = matches.find((match) => match.sourceId === a.id)?.score ?? 0;
         const matchB = matches.find((match) => match.sourceId === b.id)?.score ?? 0;
         if (matchA !== matchB) {
@@ -152,20 +172,29 @@ export async function POST(request: Request) {
 
         return a.title.localeCompare(b.title);
       }),
-      matches,
+      matches: pagedMatches,
     };
 
-    return apiSuccess(responseBody);
+    const response = apiSuccess(responseBody);
+    response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=120");
+    return response;
   } catch (error) {
-    return apiSuccess<ClaimMatchSearchResponse>({
+    const response = apiSuccess<ClaimMatchSearchResponse>({
       originalClaim: claim,
       refinedQuestion,
       retrievalQueries,
       keywords: claimTerms,
+      page,
+      limit,
+      totalResults: 0,
+      hasMore: false,
       sources: [],
       matches: [],
       matchError:
         error instanceof Error ? error.message : "Unable to rank claim matches right now.",
     });
+
+    response.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=120");
+    return response;
   }
 }

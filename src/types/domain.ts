@@ -33,6 +33,10 @@ export interface ClaimMatchSearchResponse {
   refinedQuestion: string;
   retrievalQueries: string[];
   keywords: string[];
+  page: number;
+  limit: number;
+  totalResults: number;
+  hasMore: boolean;
   sources: Source[];
   matches: ClaimMatch[];
   matchError?: string;

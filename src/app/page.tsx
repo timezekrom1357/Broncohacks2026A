@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
@@ -28,9 +28,15 @@ import type {
   Source,
 } from "@/types/domain";
 
-interface SearchResponse {
+interface PagedSearchResponse {
   ok: boolean;
-  data?: Source[];
+  data?: {
+    items: Source[];
+    page: number;
+    limit: number;
+    totalCount: number;
+    hasMore: boolean;
+  };
   error?: {
     code: string;
     message: string;
@@ -152,6 +158,8 @@ const MODE_HELP: Record<StartMode, string> = {
     "Start from a claim or thesis statement. In a later step, this mode will rank source matches.",
 };
 
+const RESULT_LIMIT_OPTIONS = [10, 15, 25, 50] as const;
+
 function formatPublicationDate(rawDate: string) {
   if (!rawDate) {
     return "Unknown date";
@@ -217,6 +225,10 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [startMode, setStartMode] = useState<StartMode>(START_MODE_VALUES[0]);
   const [results, setResults] = useState<Source[]>([]);
+  const [resultsPage, setResultsPage] = useState(1);
+  const [resultsLimit, setResultsLimit] = useState<(typeof RESULT_LIMIT_OPTIONS)[number]>(15);
+  const [resultsTotalCount, setResultsTotalCount] = useState(0);
+  const [resultsHasMore, setResultsHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [isClaimMatching, setIsClaimMatching] = useState(false);
@@ -265,6 +277,12 @@ export default function Home() {
   const [claimRefinedQuestion, setClaimRefinedQuestion] = useState<string>("");
   const [claimRetrievalQueries, setClaimRetrievalQueries] = useState<string[]>([]);
   const [claimKeywords, setClaimKeywords] = useState<string[]>([]);
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+  const queryRef = useRef(query);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const claimAbortRef = useRef<AbortController | null>(null);
+  const planAbortRef = useRef<AbortController | null>(null);
+  const lastSubmittedSignatureRef = useRef<string>("");
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSources = useMemo(
@@ -279,10 +297,30 @@ export default function Home() {
     () => new Set(savedSources.map((item) => item.openAlexId)),
     [savedSources]
   );
+  const totalResultPages = useMemo(
+    () => Math.max(1, Math.ceil((resultsTotalCount || results.length) / resultsLimit)),
+    [resultsLimit, results.length, resultsTotalCount]
+  );
 
   useEffect(() => {
     setGuestCitationHistory(readGuestCitationHistory());
   }, []);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, 450);
+
+    queryRef.current = query;
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [query]);
+
+  useEffect(() => {
+    lastSubmittedSignatureRef.current = `${startMode}::${queryRef.current.trim()}`;
+  }, [startMode]);
 
   useEffect(() => {
     if (sessionStatus !== "authenticated") {
@@ -311,6 +349,8 @@ export default function Home() {
       setClaimKeywords([]);
       setClaimMatchError(null);
     }
+
+    setResultsPage(1);
   }, [startMode]);
 
   async function loadAccountData() {
@@ -586,56 +626,99 @@ export default function Home() {
     }
   }
 
-  async function performSearch(searchQuery: string) {
+  const performSearch = useCallback(async (
+    searchQuery: string,
+    page = 1,
+    limit = resultsLimit
+  ) => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
       setErrorMessage("Enter a topic or claim before searching.");
       return;
     }
 
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
+    const signature = `${startMode}::${trimmedQuery}`;
+    lastSubmittedSignatureRef.current = signature;
+
     setIsLoading(true);
     setErrorMessage(null);
     setPlanErrorMessage(null);
     setResearchPlan(null);
     setHasSearched(true);
+    setResultsPage(page);
+    setResultsLimit(limit);
 
     try {
       const response = await fetch(
-        `/api/search?q=${encodeURIComponent(trimmedQuery)}&startMode=${encodeURIComponent(startMode)}`
+        `/api/search?q=${encodeURIComponent(trimmedQuery)}&startMode=${encodeURIComponent(startMode)}&page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`,
+        {
+          signal: controller.signal,
+        }
       );
-      const payload = (await response.json()) as SearchResponse;
+      const payload = (await response.json()) as PagedSearchResponse;
 
       if (!response.ok || !payload.ok || !payload.data) {
         throw new Error(payload.error?.message || "Search request failed.");
       }
 
-      setResults(payload.data);
-  setExpandedSourceIds([]);
+      setResults(payload.data.items);
+      setResultsPage(payload.data.page);
+      setResultsLimit(payload.data.limit as (typeof RESULT_LIMIT_OPTIONS)[number]);
+      setResultsTotalCount(payload.data.totalCount);
+      setResultsHasMore(payload.data.hasMore);
+      setExpandedSourceIds([]);
       setSelectedSourceIds([]);
-  setCitationTextsBySource({});
-  setCitationErrorsBySource({});
-  setCopyStatusBySource({});
-  setCitationLoadingSourceId(null);
+      setCitationTextsBySource({});
+      setCitationErrorsBySource({});
+      setCopyStatusBySource({});
+      setCitationLoadingSourceId(null);
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
     } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       setResults([]);
+      setResultsTotalCount(0);
+      setResultsHasMore(false);
       setErrorMessage(
         error instanceof Error
           ? error.message
           : "Unable to complete search right now. Please retry."
       );
     } finally {
-      setIsLoading(false);
-    }
-  }
+      if (searchAbortRef.current === controller) {
+        searchAbortRef.current = null;
+      }
 
-  async function requestClaimMatches(trimmedClaim: string) {
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
+    }
+  }, [resultsLimit, startMode]);
+
+  const requestClaimMatches = useCallback(async (
+    trimmedClaim: string,
+    page = 1,
+    limit = resultsLimit
+  ) => {
     if (!trimmedClaim) {
       setErrorMessage("Enter a claim before matching sources.");
       return;
     }
+
+    claimAbortRef.current?.abort();
+    const controller = new AbortController();
+    claimAbortRef.current = controller;
+
+    const signature = `${startMode}::${trimmedClaim}`;
+    lastSubmittedSignatureRef.current = signature;
 
     setIsClaimMatching(true);
     setErrorMessage(null);
@@ -644,15 +727,21 @@ export default function Home() {
     setPendingResearchPlanQuery("");
     setClaimMatchError(null);
     setHasSearched(true);
+    setResultsPage(page);
+    setResultsLimit(limit);
 
     try {
-      const response = await fetch("/api/claim-match", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ claim: trimmedClaim }),
-      });
+      const response = await fetch(
+        `/api/claim-match?page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          signal: controller.signal,
+          body: JSON.stringify({ claim: trimmedClaim }),
+        }
+      );
 
       const payload = (await response.json()) as {
         ok: boolean;
@@ -668,6 +757,10 @@ export default function Home() {
       }
 
       setResults(payload.data.sources);
+      setResultsPage(payload.data.page);
+      setResultsLimit(payload.data.limit as (typeof RESULT_LIMIT_OPTIONS)[number]);
+      setResultsTotalCount(payload.data.totalResults);
+      setResultsHasMore(payload.data.hasMore);
       setClaimMatches(payload.data.matches);
       setClaimRefinedQuestion(payload.data.refinedQuestion);
       setClaimRetrievalQueries(payload.data.retrievalQueries);
@@ -683,6 +776,10 @@ export default function Home() {
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
     } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       setClaimMatches([]);
       setClaimRefinedQuestion("");
       setClaimRetrievalQueries([]);
@@ -692,17 +789,46 @@ export default function Home() {
           ? `${error.message} Falling back to a standard search.`
           : "Unable to rank claim matches right now. Falling back to a standard search."
       );
-      await performSearch(trimmedClaim);
+      await performSearch(trimmedClaim, page, limit);
     } finally {
-      setIsClaimMatching(false);
+      if (claimAbortRef.current === controller) {
+        claimAbortRef.current = null;
+      }
+
+      if (!controller.signal.aborted) {
+        setIsClaimMatching(false);
+      }
     }
+  }, [performSearch, resultsLimit, startMode]);
+
+  async function rerunCurrentQuery(page = resultsPage, limit = resultsLimit) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      return;
+    }
+
+    if (startMode === "query-to-research-plan") {
+      await requestResearchPlan(trimmedQuery);
+      return;
+    }
+
+    if (startMode === "claim-to-source") {
+      await requestClaimMatches(trimmedQuery, page, limit);
+      return;
+    }
+
+    await performSearch(trimmedQuery, page, limit);
   }
 
   async function runSearch() {
-    await performSearch(query);
+    await rerunCurrentQuery(1, resultsLimit);
   }
 
   async function requestResearchPlan(trimmedQuery: string) {
+    planAbortRef.current?.abort();
+    const controller = new AbortController();
+    planAbortRef.current = controller;
+
     setIsPlanning(true);
     setErrorMessage(null);
     setPlanErrorMessage(null);
@@ -714,6 +840,7 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
         body: JSON.stringify({ query: trimmedQuery }),
       });
 
@@ -731,13 +858,23 @@ export default function Home() {
       });
       setPendingResearchPlanQuery(trimmedQuery);
     } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       setResearchPlan(null);
       setPlanErrorMessage(
         error instanceof Error ? error.message : "Unable to build a research plan right now."
       );
       await performSearch(trimmedQuery);
     } finally {
-      setIsPlanning(false);
+      if (planAbortRef.current === controller) {
+        planAbortRef.current = null;
+      }
+
+      if (!controller.signal.aborted) {
+        setIsPlanning(false);
+      }
     }
   }
 
@@ -751,18 +888,18 @@ export default function Home() {
     }
 
     if (startMode === "claim-to-source") {
-      await requestClaimMatches(trimmedQuery);
+      await requestClaimMatches(trimmedQuery, 1, resultsLimit);
       return;
     }
 
-    await performSearch(query);
+    await performSearch(trimmedQuery, 1, resultsLimit);
   }
 
   async function searchWithSuggestion(suggestion: string) {
     setQuery(suggestion);
     setResearchPlan(null);
     setPendingResearchPlanQuery("");
-    await performSearch(suggestion);
+    await performSearch(suggestion, 1, resultsLimit);
   }
 
   async function searchWithOriginalResearchQuery() {
@@ -770,8 +907,29 @@ export default function Home() {
     setQuery(originalQuery);
     setResearchPlan(null);
     setPendingResearchPlanQuery("");
-    await performSearch(originalQuery);
+    await performSearch(originalQuery, 1, resultsLimit);
   }
+
+  useEffect(() => {
+    const trimmedQuery = debouncedQuery.trim();
+    if (!trimmedQuery || startMode === "query-to-research-plan") {
+      return;
+    }
+
+    const signature = `${startMode}::${trimmedQuery}`;
+    if (lastSubmittedSignatureRef.current === signature) {
+      return;
+    }
+
+    lastSubmittedSignatureRef.current = signature;
+
+    if (startMode === "claim-to-source") {
+      void requestClaimMatches(trimmedQuery, 1, resultsLimit);
+      return;
+    }
+
+    void performSearch(trimmedQuery, 1, resultsLimit);
+  }, [debouncedQuery, performSearch, requestClaimMatches, resultsLimit, startMode]);
 
   async function generateCitationForSource(source: Source) {
     setCitationLoadingSourceId(source.id);
@@ -1511,10 +1669,26 @@ export default function Home() {
         </section>
       ) : null}
 
-      {isLoading ? (
+      {sessionStatus === "authenticated" && isAccountDataLoading ? (
+        <LoadingState title="Loading account data" message="Restoring saved sources and history." />
+      ) : null}
+
+      {isLoading || isPlanning || isClaimMatching ? (
         <LoadingState
-          title="Searching OpenAlex"
-          message="Finding relevant academic sources for your query."
+          title={
+            isClaimMatching
+              ? "Ranking claim matches"
+              : isPlanning
+                ? "Building research plan"
+                : "Searching OpenAlex"
+          }
+          message={
+            isClaimMatching
+              ? "Fetching candidate sources, scoring them against your claim, and keeping the source list usable while the match completes."
+              : isPlanning
+                ? "Reviewing your topic and preparing a refined search path."
+                : "Finding relevant academic sources for your query."
+          }
         />
       ) : null}
 
@@ -1531,8 +1705,12 @@ export default function Home() {
 
       {!isLoading && !errorMessage && hasSearched && results.length === 0 ? (
         <EmptyState
-          title="No sources found"
-          message="Try broader terms, fewer keywords, or a more general phrasing of your topic."
+          title={startMode === "claim-to-source" ? "No ranked matches found" : "No sources found"}
+          message={
+            startMode === "claim-to-source"
+              ? "Try a broader claim, or switch to regular search if you want to browse the wider source list first."
+              : "Try broader terms, fewer keywords, or a more general phrasing of your topic."
+          }
           actionLabel="Search again"
           onAction={() => {
             void runSearch();
@@ -1543,10 +1721,66 @@ export default function Home() {
       {!isLoading && !errorMessage && results.length > 0 ? (
         <section className="grid gap-4">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-slate-700">
-                Selected sources: <span className="font-semibold text-slate-900">{selectedSourceIds.length}</span>
-              </p>
+            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+              <div className="space-y-1">
+                <p className="text-sm text-slate-700">
+                  Selected sources on this page: <span className="font-semibold text-slate-900">{selectedSourceIds.length}</span>
+                </p>
+                <p className="text-xs text-slate-500">
+                  Showing page {resultsPage} of {totalResultPages} · {resultsTotalCount || results.length} total results
+                </p>
+              </div>
+              <div className="flex flex-col gap-3 sm:items-end">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-semibold text-slate-700" htmlFor="results-limit">
+                    Results per page
+                  </label>
+                  <select
+                    id="results-limit"
+                    value={resultsLimit}
+                    onChange={(event) => {
+                      const nextLimit = Number.parseInt(event.target.value, 10) as (typeof RESULT_LIMIT_OPTIONS)[number];
+                      if (!RESULT_LIMIT_OPTIONS.includes(nextLimit)) {
+                        return;
+                      }
+
+                      void rerunCurrentQuery(1, nextLimit);
+                    }}
+                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    {RESULT_LIMIT_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void rerunCurrentQuery(Math.max(1, resultsPage - 1), resultsLimit);
+                    }}
+                    disabled={resultsPage <= 1 || isLoading || isClaimMatching}
+                    className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void rerunCurrentQuery(resultsPage + 1, resultsLimit);
+                    }}
+                    disabled={(!resultsHasMore && resultsPage >= totalResultPages) || isLoading || isClaimMatching}
+                    className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
