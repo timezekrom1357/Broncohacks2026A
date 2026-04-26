@@ -35,6 +35,20 @@ interface SearchResponse {
   };
 }
 
+interface ResearchPlanResponseWrapper {
+  ok: boolean;
+  data?: {
+    refinedQuestion: string;
+    suggestedQueries: string[];
+    keywords: string[];
+    synonyms: string[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
 interface CitationResponse {
   ok: boolean;
   data?: {
@@ -120,6 +134,14 @@ interface BatchCitationItem {
   citationText: string;
 }
 
+interface ResearchPlanState {
+  originalQuery: string;
+  refinedQuestion: string;
+  suggestedQueries: string[];
+  keywords: string[];
+  synonyms: string[];
+}
+
 const MODE_HELP: Record<StartMode, string> = {
   "regular-query": "Search for sources directly by topic.",
   "query-to-research-plan":
@@ -194,7 +216,9 @@ export default function Home() {
   const [startMode, setStartMode] = useState<StartMode>(START_MODE_VALUES[0]);
   const [results, setResults] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isPlanning, setIsPlanning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [planErrorMessage, setPlanErrorMessage] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [expandedSourceIds, setExpandedSourceIds] = useState<string[]>([]);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>("MLA");
@@ -231,6 +255,8 @@ export default function Home() {
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [savingSourceIds, setSavingSourceIds] = useState<string[]>([]);
   const [savingCitationSourceIds, setSavingCitationSourceIds] = useState<string[]>([]);
+  const [researchPlan, setResearchPlan] = useState<ResearchPlanState | null>(null);
+  const [pendingResearchPlanQuery, setPendingResearchPlanQuery] = useState<string>("");
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSources = useMemo(
@@ -532,8 +558,8 @@ export default function Home() {
     }
   }
 
-  async function runSearch() {
-    const trimmedQuery = query.trim();
+  async function performSearch(searchQuery: string) {
+    const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
       setErrorMessage("Enter a topic or claim before searching.");
       return;
@@ -541,6 +567,8 @@ export default function Home() {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setPlanErrorMessage(null);
+    setResearchPlan(null);
     setHasSearched(true);
 
     try {
@@ -575,9 +603,74 @@ export default function Home() {
     }
   }
 
+  async function runSearch() {
+    await performSearch(query);
+  }
+
+  async function requestResearchPlan(trimmedQuery: string) {
+    setIsPlanning(true);
+    setErrorMessage(null);
+    setPlanErrorMessage(null);
+    setHasSearched(true);
+
+    try {
+      const response = await fetch("/api/research-plan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query: trimmedQuery }),
+      });
+
+      const payload = (await response.json()) as ResearchPlanResponseWrapper;
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Research plan failed.");
+      }
+
+      setResearchPlan({
+        originalQuery: trimmedQuery,
+        refinedQuestion: payload.data.refinedQuestion,
+        suggestedQueries: payload.data.suggestedQueries,
+        keywords: payload.data.keywords,
+        synonyms: payload.data.synonyms,
+      });
+      setPendingResearchPlanQuery(trimmedQuery);
+    } catch (error) {
+      setResearchPlan(null);
+      setPlanErrorMessage(
+        error instanceof Error ? error.message : "Unable to build a research plan right now."
+      );
+      await performSearch(trimmedQuery);
+    } finally {
+      setIsPlanning(false);
+    }
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await runSearch();
+
+    const trimmedQuery = query.trim();
+    if (startMode === "query-to-research-plan") {
+      await requestResearchPlan(trimmedQuery);
+      return;
+    }
+
+    await performSearch(query);
+  }
+
+  async function searchWithSuggestion(suggestion: string) {
+    setQuery(suggestion);
+    setResearchPlan(null);
+    setPendingResearchPlanQuery("");
+    await performSearch(suggestion);
+  }
+
+  async function searchWithOriginalResearchQuery() {
+    const originalQuery = pendingResearchPlanQuery || query;
+    setQuery(originalQuery);
+    setResearchPlan(null);
+    setPendingResearchPlanQuery("");
+    await performSearch(originalQuery);
   }
 
   async function generateCitationForSource(source: Source) {
@@ -968,15 +1061,100 @@ export default function Home() {
               />
               <button
                 type="submit"
-                disabled={isLoading}
+                disabled={isLoading || isPlanning}
                 className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {isLoading ? "Searching..." : "Search"}
+                {isLoading ? "Searching..." : isPlanning ? "Planning..." : "Search"}
               </button>
             </div>
           </div>
         </form>
       </section>
+
+      {researchPlan ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Research plan</h2>
+              <p className="mt-1 text-sm text-slate-700">
+                Review the refined question and pick a suggested search query, or continue with the original query.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void searchWithOriginalResearchQuery();
+              }}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+            >
+              Search original query
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <div className="rounded-xl border border-sky-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+                Refined question
+              </p>
+              <p className="mt-2 text-sm text-slate-800">{researchPlan.refinedQuestion}</p>
+            </div>
+            <div className="rounded-xl border border-sky-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Keywords</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {researchPlan.keywords.map((keyword) => (
+                  <span key={keyword} className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800">
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-sky-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Synonyms</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {researchPlan.synonyms.map((synonym) => (
+                  <span key={synonym} className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800">
+                    {synonym}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-sky-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+              Suggested queries
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {researchPlan.suggestedQueries.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => {
+                    void searchWithSuggestion(suggestion);
+                  }}
+                  className="rounded-full border border-slate-300 px-3 py-2 text-sm text-slate-800 hover:bg-slate-100"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-slate-600">
+            Original query: <span className="font-semibold text-slate-800">{researchPlan.originalQuery}</span>
+          </p>
+        </section>
+      ) : null}
+
+      {planErrorMessage ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800 shadow-sm">
+          <p className="text-sm font-semibold">Research plan unavailable</p>
+          <p className="mt-1 text-sm">{planErrorMessage}</p>
+          <p className="mt-2 text-xs">
+            The app automatically continued with a standard search so your workflow is not blocked.
+          </p>
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
