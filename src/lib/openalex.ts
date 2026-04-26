@@ -27,7 +27,16 @@ interface OpenAlexWork {
   publication_date?: string | null;
   cited_by_count?: number | null;
   relevance_score?: number | null;
+  open_access?: {
+    is_oa?: boolean | null;
+    oa_status?: string | null;
+    any_repository_has_fulltext?: boolean | null;
+  } | null;
+  best_oa_location?: {
+    is_oa?: boolean | null;
+  } | null;
   primary_location?: {
+    is_oa?: boolean | null;
     landing_page_url?: string | null;
     pdf_url?: string | null;
   } | null;
@@ -84,11 +93,17 @@ function normalizeExternalUrl(...values: Array<string | null | undefined>) {
 }
 
 function getAccessType(work: OpenAlexWork): "free" | "paid" | "unknown" {
-  if (work.primary_location?.pdf_url) {
+  const oaSignals = [
+    work.open_access?.is_oa,
+    work.best_oa_location?.is_oa,
+    work.primary_location?.is_oa,
+  ].filter((value): value is boolean => typeof value === "boolean");
+
+  if (oaSignals.some(Boolean)) {
     return "free";
   }
 
-  if (work.primary_location?.landing_page_url) {
+  if (oaSignals.some((value) => value === false)) {
     return "paid";
   }
 
@@ -208,6 +223,8 @@ export async function searchOpenAlexPage(
       "publication_date",
       "cited_by_count",
       "relevance_score",
+      "open_access",
+      "best_oa_location",
       "primary_location",
     ].join(",")
   );
