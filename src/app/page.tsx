@@ -151,7 +151,7 @@ const MODE_HELP: Record<StartMode, string> = {
     "Start from a claim or thesis statement. In a later step, this mode will rank source matches.",
 };
 
-const RESULT_LIMIT_OPTIONS = [10, 15, 25, 50] as const;
+const DEFAULT_RESULTS_LIMIT = 15;
 const RESULT_SORT_OPTIONS = [
   { value: "recommended", label: "Recommended" },
   { value: "citation-count", label: "Citation count" },
@@ -220,13 +220,21 @@ function buildMetadataSummary(source: Source) {
   return `This source appears to discuss ${source.title}. It is likely relevant to your search because it covers ${keywordText}.`;
 }
 
+function normalizeResultsLimit(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return DEFAULT_RESULTS_LIMIT;
+  }
+
+  return Math.trunc(value);
+}
+
 export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
   const [query, setQuery] = useState("");
   const [startMode, setStartMode] = useState<StartMode>(START_MODE_VALUES[0]);
   const [results, setResults] = useState<Source[]>([]);
   const [resultsPage, setResultsPage] = useState(1);
-  const [resultsLimit, setResultsLimit] = useState<(typeof RESULT_LIMIT_OPTIONS)[number]>(15);
+  const [resultsLimit, setResultsLimit] = useState(DEFAULT_RESULTS_LIMIT);
   const [resultsTotalCount, setResultsTotalCount] = useState(0);
   const [resultsHasMore, setResultsHasMore] = useState(false);
   const [resultSort, setResultSort] = useState<ResultSortOption>("recommended");
@@ -301,10 +309,13 @@ export default function Home() {
     () => new Set(savedSources.map((item) => item.openAlexId)),
     [savedSources]
   );
-  const totalResultPages = useMemo(
-    () => Math.max(1, Math.ceil((resultsTotalCount || results.length) / resultsLimit)),
-    [resultsLimit, results.length, resultsTotalCount]
-  );
+  const totalResultPages = useMemo(() => {
+    const safeLimit = normalizeResultsLimit(resultsLimit);
+    const totalResults = resultsTotalCount > 0 ? resultsTotalCount : results.length;
+    const pages = Math.ceil(totalResults / safeLimit);
+
+    return Number.isFinite(pages) && pages > 0 ? pages : 1;
+  }, [resultsLimit, results.length, resultsTotalCount]);
 
   const sortedResults = useMemo(() => {
     const filteredResults = openAccessOnly
@@ -836,7 +847,7 @@ export default function Home() {
 
       setResults(payload.data.items);
       setResultsPage(payload.data.page);
-      setResultsLimit(payload.data.limit as (typeof RESULT_LIMIT_OPTIONS)[number]);
+      setResultsLimit(normalizeResultsLimit(payload.data.limit));
       setResultsTotalCount(payload.data.totalCount);
       setResultsHasMore(payload.data.hasMore);
       setExpandedSourceIds([]);
@@ -927,7 +938,7 @@ export default function Home() {
 
       setResults(payload.data.sources);
       setResultsPage(payload.data.page);
-      setResultsLimit(payload.data.limit as (typeof RESULT_LIMIT_OPTIONS)[number]);
+      setResultsLimit(normalizeResultsLimit(payload.data.limit));
       setResultsTotalCount(payload.data.totalResults);
       setResultsHasMore(payload.data.hasMore);
       setClaimMatches(payload.data.matches);
@@ -1989,28 +2000,6 @@ export default function Home() {
                     />
                     Open access only
                   </label>
-                  <label className="text-xs font-semibold text-slate-700" htmlFor="results-limit">
-                    Results per page
-                  </label>
-                  <select
-                    id="results-limit"
-                    value={resultsLimit}
-                    onChange={(event) => {
-                      const nextLimit = Number.parseInt(event.target.value, 10) as (typeof RESULT_LIMIT_OPTIONS)[number];
-                      if (!RESULT_LIMIT_OPTIONS.includes(nextLimit)) {
-                        return;
-                      }
-
-                      void rerunCurrentQuery(1, nextLimit);
-                    }}
-                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
-                  >
-                    {RESULT_LIMIT_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {resultsPage > 1 ? (
@@ -2107,7 +2096,7 @@ export default function Home() {
                       void saveBatchCitationsForUser();
                     }}
                     disabled={isBatchCitationSaving}
-                    className="mt-2 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                    className="mt-4 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     {isBatchCitationSaving ? "Saving list..." : "Save citation list"}
                   </button>
