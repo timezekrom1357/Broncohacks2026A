@@ -277,7 +277,11 @@ export default function Home() {
   const [isAccountDataLoading, setIsAccountDataLoading] = useState(false);
   const [accountDataError, setAccountDataError] = useState<string | null>(null);
   const [isDeleteAccountLoading, setIsDeleteAccountLoading] = useState(false);
-  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [isClearingAllSavedData, setIsClearingAllSavedData] = useState(false);
+  const [isClearingSearchHistory, setIsClearingSearchHistory] = useState(false);
+  const [isClearingEnhancedQueries, setIsClearingEnhancedQueries] = useState(false);
+  const [isClearingSavedSources, setIsClearingSavedSources] = useState(false);
+  const [isClearingSavedCitations, setIsClearingSavedCitations] = useState(false);
   const [savingSourceIds, setSavingSourceIds] = useState<string[]>([]);
   const [savingCitationSourceIds, setSavingCitationSourceIds] = useState<string[]>([]);
   const [researchPlan, setResearchPlan] = useState<ResearchPlanState | null>(null);
@@ -610,12 +614,57 @@ export default function Home() {
     }
   }
 
-  async function clearUserHistory() {
-    setIsClearingHistory(true);
+  async function clearAllSavedDataAndHistory() {
+    setIsClearingAllSavedData(true);
     setAccountDataError(null);
 
     try {
-      const response = await fetch("/api/history", {
+      const [historyResponse, sourcesResponse, citationsResponse] = await Promise.all([
+        fetch("/api/history?type=all", {
+          method: "DELETE",
+        }),
+        fetch("/api/saved-sources", {
+          method: "DELETE",
+        }),
+        fetch("/api/saved-citations", {
+          method: "DELETE",
+        }),
+      ]);
+
+      if (!historyResponse.ok || !sourcesResponse.ok || !citationsResponse.ok) {
+        const [historyPayload, sourcesPayload, citationsPayload] = await Promise.all([
+          historyResponse.json().catch(() => null),
+          sourcesResponse.json().catch(() => null),
+          citationsResponse.json().catch(() => null),
+        ]);
+
+        const firstMessage =
+          (historyPayload as { error?: { message?: string } } | null)?.error?.message ||
+          (sourcesPayload as { error?: { message?: string } } | null)?.error?.message ||
+          (citationsPayload as { error?: { message?: string } } | null)?.error?.message;
+
+        throw new Error(firstMessage || "Unable to clear all saved data and history.");
+      }
+
+      setSearchHistory([]);
+      setEnhancedQueries([]);
+      setSavedSources([]);
+      setSavedCitations([]);
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to clear all saved data and history."
+      );
+    } finally {
+      setIsClearingAllSavedData(false);
+    }
+  }
+
+  async function clearSearchHistoryList() {
+    setIsClearingSearchHistory(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/history?type=search", {
         method: "DELETE",
       });
 
@@ -625,15 +674,98 @@ export default function Home() {
             message?: string;
           };
         };
-        throw new Error(payload.error?.message || "Unable to clear history.");
+        throw new Error(payload.error?.message || "Unable to clear search history.");
       }
 
       setSearchHistory([]);
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to clear search history."
+      );
+    } finally {
+      setIsClearingSearchHistory(false);
+    }
+  }
+
+  async function clearEnhancedQueryList() {
+    setIsClearingEnhancedQueries(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/history?type=enhanced", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to clear enhanced queries.");
+      }
+
       setEnhancedQueries([]);
     } catch (error) {
-      setAccountDataError(error instanceof Error ? error.message : "Unable to clear history.");
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to clear enhanced queries."
+      );
     } finally {
-      setIsClearingHistory(false);
+      setIsClearingEnhancedQueries(false);
+    }
+  }
+
+  async function clearSavedSourceList() {
+    setIsClearingSavedSources(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/saved-sources", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to clear saved sources.");
+      }
+
+      setSavedSources([]);
+    } catch (error) {
+      setAccountDataError(error instanceof Error ? error.message : "Unable to clear saved sources.");
+    } finally {
+      setIsClearingSavedSources(false);
+    }
+  }
+
+  async function clearSavedCitationList() {
+    setIsClearingSavedCitations(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/saved-citations", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to clear saved citations.");
+      }
+
+      setSavedCitations([]);
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to clear saved citations."
+      );
+    } finally {
+      setIsClearingSavedCitations(false);
     }
   }
 
@@ -1591,12 +1723,12 @@ export default function Home() {
             <button
               type="button"
               onClick={() => {
-                void clearUserHistory();
+                void clearAllSavedDataAndHistory();
               }}
-              disabled={isClearingHistory}
+              disabled={isClearingAllSavedData}
               className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {isClearingHistory ? "Clearing history..." : "Clear history"}
+              {isClearingAllSavedData ? "Clearing all data..." : "Clear all saved data and history"}
             </button>
           </div>
 
@@ -1604,7 +1736,19 @@ export default function Home() {
 
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <h3 className="text-sm font-semibold text-slate-900">Search history ({searchHistory.length})</h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">Search history ({searchHistory.length})</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void clearSearchHistoryList();
+                  }}
+                  disabled={isClearingSearchHistory || searchHistory.length === 0}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isClearingSearchHistory ? "Deleting..." : "Delete all"}
+                </button>
+              </div>
               {searchHistory.length === 0 ? (
                 <p className="mt-2 text-xs text-slate-600">No saved search history yet.</p>
               ) : (
@@ -1630,7 +1774,19 @@ export default function Home() {
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <h3 className="text-sm font-semibold text-slate-900">Saved sources ({savedSources.length})</h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">Saved sources ({savedSources.length})</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void clearSavedSourceList();
+                  }}
+                  disabled={isClearingSavedSources || savedSources.length === 0}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isClearingSavedSources ? "Deleting..." : "Delete all"}
+                </button>
+              </div>
               {savedSources.length === 0 ? (
                 <p className="mt-2 text-xs text-slate-600">No saved sources yet.</p>
               ) : (
@@ -1655,9 +1811,21 @@ export default function Home() {
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Saved citations ({savedCitations.length})
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Saved citations ({savedCitations.length})
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void clearSavedCitationList();
+                  }}
+                  disabled={isClearingSavedCitations || savedCitations.length === 0}
+                  className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isClearingSavedCitations ? "Deleting..." : "Delete all"}
+                </button>
+              </div>
               {savedCitations.length === 0 ? (
                 <p className="mt-2 text-xs text-slate-600">No saved citations yet.</p>
               ) : (
@@ -1684,9 +1852,21 @@ export default function Home() {
           </div>
 
           <article className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <h3 className="text-sm font-semibold text-slate-900">
-              Enhanced queries ({enhancedQueries.length})
-            </h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Enhanced queries ({enhancedQueries.length})
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  void clearEnhancedQueryList();
+                }}
+                disabled={isClearingEnhancedQueries || enhancedQueries.length === 0}
+                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isClearingEnhancedQueries ? "Deleting..." : "Delete all"}
+              </button>
+            </div>
             {enhancedQueries.length === 0 ? (
               <p className="mt-2 text-xs text-slate-600">No enhanced query history yet.</p>
             ) : (
@@ -1834,26 +2014,30 @@ export default function Home() {
                   </select>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void rerunCurrentQuery(Math.max(1, resultsPage - 1), resultsLimit);
-                    }}
-                    disabled={resultsPage <= 1 || isLoading || isClaimMatching}
-                    className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void rerunCurrentQuery(resultsPage + 1, resultsLimit);
-                    }}
-                    disabled={(!resultsHasMore && resultsPage >= totalResultPages) || isLoading || isClaimMatching}
-                    className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Next
-                  </button>
+                  {resultsPage > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void rerunCurrentQuery(resultsPage - 1, resultsLimit);
+                      }}
+                      disabled={isLoading || isClaimMatching}
+                      className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Previous
+                    </button>
+                  ) : null}
+                  {resultsHasMore || resultsPage < totalResultPages ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void rerunCurrentQuery(resultsPage + 1, resultsLimit);
+                      }}
+                      disabled={isLoading || isClaimMatching}
+                      className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Next
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
