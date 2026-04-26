@@ -161,8 +161,6 @@ const MODE_HELP: Record<StartMode, string> = {
 const RESULT_LIMIT_OPTIONS = [10, 15, 25, 50] as const;
 const RESULT_SORT_OPTIONS = [
   { value: "recommended", label: "Recommended" },
-  { value: "free-source", label: "Free source first" },
-  { value: "paid-source", label: "Paid source first" },
   { value: "citation-count", label: "Citation count" },
   { value: "publication-date", label: "Publication date" },
 ] as const;
@@ -239,6 +237,7 @@ export default function Home() {
   const [resultsTotalCount, setResultsTotalCount] = useState(0);
   const [resultsHasMore, setResultsHasMore] = useState(false);
   const [resultSort, setResultSort] = useState<ResultSortOption>("recommended");
+  const [openAccessOnly, setOpenAccessOnly] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [isClaimMatching, setIsClaimMatching] = useState(false);
@@ -295,10 +294,6 @@ export default function Home() {
   const lastSubmittedSignatureRef = useRef<string>("");
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
-  const selectedSources = useMemo(
-    () => results.filter((source) => selectedSourceIds.includes(source.id)),
-    [results, selectedSourceIds]
-  );
   const claimMatchBySourceId = useMemo(
     () => new Map(claimMatches.map((match) => [match.sourceId, match])),
     [claimMatches]
@@ -313,30 +308,20 @@ export default function Home() {
   );
 
   const sortedResults = useMemo(() => {
-    const accessRank: Record<NonNullable<Source["accessType"]>, number> = {
-      free: 0,
-      paid: 1,
-      unknown: 2,
-    };
+    const filteredResults = openAccessOnly
+      ? results.filter((source) => source.accessType === "free")
+      : results;
+
+    const sourceOrder = new Map(results.map((source, index) => [source.id, index]));
 
     const parsedPublicationDate = (value: string) => {
       const parsed = Date.parse(value);
       return Number.isNaN(parsed) ? 0 : parsed;
     };
 
-    const sortedItems = [...results].sort((left, right) => {
-      if (resultSort === "free-source") {
-        const accessDiff = accessRank[left.accessType ?? "unknown"] - accessRank[right.accessType ?? "unknown"];
-        if (accessDiff !== 0) {
-          return accessDiff;
-        }
-      }
-
-      if (resultSort === "paid-source") {
-        const accessDiff = accessRank[right.accessType ?? "unknown"] - accessRank[left.accessType ?? "unknown"];
-        if (accessDiff !== 0) {
-          return accessDiff;
-        }
+    const sortedItems = [...filteredResults].sort((left, right) => {
+      if (resultSort === "recommended") {
+        return (sourceOrder.get(left.id) ?? 0) - (sourceOrder.get(right.id) ?? 0);
       }
 
       if (resultSort === "citation-count") {
@@ -352,20 +337,16 @@ export default function Home() {
         }
       }
 
-      if (left.citationCount !== right.citationCount) {
-        return right.citationCount - left.citationCount;
-      }
-
-      const dateDiff = parsedPublicationDate(right.publicationDate) - parsedPublicationDate(left.publicationDate);
-      if (dateDiff !== 0) {
-        return dateDiff;
-      }
-
-      return left.title.localeCompare(right.title);
+      return (sourceOrder.get(left.id) ?? 0) - (sourceOrder.get(right.id) ?? 0);
     });
 
     return sortedItems;
-  }, [results, resultSort]);
+  }, [openAccessOnly, resultSort, results]);
+
+  const selectedSources = useMemo(
+    () => sortedResults.filter((source) => selectedSourceIds.includes(source.id)),
+    [selectedSourceIds, sortedResults]
+  );
 
   useEffect(() => {
     setGuestCitationHistory(readGuestCitationHistory());
@@ -1768,11 +1749,19 @@ export default function Home() {
         />
       ) : null}
 
-      {!isLoading && !errorMessage && hasSearched && results.length === 0 ? (
+      {!isLoading && !errorMessage && hasSearched && sortedResults.length === 0 ? (
         <EmptyState
-          title={startMode === "claim-to-source" ? "No ranked matches found" : "No sources found"}
+          title={
+            openAccessOnly
+              ? "No open access sources on this page"
+              : startMode === "claim-to-source"
+                ? "No ranked matches found"
+                : "No sources found"
+          }
           message={
-            startMode === "claim-to-source"
+            openAccessOnly
+              ? "Try unchecking Open access only, or move to the next page to find more open access sources."
+              : startMode === "claim-to-source"
               ? "Try a broader claim, or switch to regular search if you want to browse the wider source list first."
               : "Try broader terms, fewer keywords, or a more general phrasing of your topic."
           }
@@ -1783,13 +1772,13 @@ export default function Home() {
         />
       ) : null}
 
-      {!isLoading && !errorMessage && results.length > 0 ? (
+      {!isLoading && !errorMessage && sortedResults.length > 0 ? (
         <section className="grid gap-4">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
               <div className="space-y-1">
                 <p className="text-sm text-slate-700">
-                  Selected sources on this page: <span className="font-semibold text-slate-900">{selectedSourceIds.length}</span>
+                  Selected sources on this page: <span className="font-semibold text-slate-900">{selectedSources.length}</span>
                 </p>
                 <p className="text-xs text-slate-500">
                   Showing page {resultsPage} of {totalResultPages} · {resultsTotalCount || results.length} total results
@@ -1812,6 +1801,15 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
+                  <label className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={openAccessOnly}
+                      onChange={(event) => setOpenAccessOnly(event.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Open access only
+                  </label>
                   <label className="text-xs font-semibold text-slate-700" htmlFor="results-limit">
                     Results per page
                   </label>
