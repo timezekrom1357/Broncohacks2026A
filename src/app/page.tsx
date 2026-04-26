@@ -1136,14 +1136,16 @@ export default function Home() {
         [source.id]: payload.data?.citationText ?? "",
       }));
 
-      const item = createGuestCitationHistoryItem({
-        sourceId: source.id,
-        sourceTitle: source.title,
-        style: payload.data.style,
-        citationText: payload.data.citationText,
-      });
+      if (sessionStatus !== "authenticated") {
+        const item = createGuestCitationHistoryItem({
+          sourceId: source.id,
+          sourceTitle: source.title,
+          style: payload.data.style,
+          citationText: payload.data.citationText,
+        });
 
-      setGuestCitationHistory(appendGuestCitationHistory(item));
+        setGuestCitationHistory(appendGuestCitationHistory(item));
+      }
     } catch (error) {
       setCitationTextsBySource((current) => ({ ...current, [source.id]: "" }));
       setCitationErrorsBySource((current) => ({
