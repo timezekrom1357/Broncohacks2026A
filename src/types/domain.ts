@@ -28,6 +28,16 @@ export interface ClaimMatchResponse {
   matches: ClaimMatch[];
 }
 
+export interface ClaimMatchSearchResponse {
+  originalClaim: string;
+  refinedQuestion: string;
+  retrievalQueries: string[];
+  keywords: string[];
+  sources: Source[];
+  matches: ClaimMatch[];
+  matchError?: string;
+}
+
 export interface CitationResponse {
   citationText: string;
   style: CitationStyle;

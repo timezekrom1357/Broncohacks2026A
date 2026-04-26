@@ -18,6 +18,8 @@ import {
   readGuestCitationHistory,
 } from "@/lib/guest-citation-history";
 import type {
+  ClaimMatch,
+  ClaimMatchSearchResponse,
   EnhancedQueryItem,
   GuestCitationHistoryItem,
   SavedCitation,
@@ -217,8 +219,10 @@ export default function Home() {
   const [results, setResults] = useState<Source[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
+  const [isClaimMatching, setIsClaimMatching] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [planErrorMessage, setPlanErrorMessage] = useState<string | null>(null);
+  const [claimMatchError, setClaimMatchError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [expandedSourceIds, setExpandedSourceIds] = useState<string[]>([]);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>("MLA");
@@ -257,11 +261,19 @@ export default function Home() {
   const [savingCitationSourceIds, setSavingCitationSourceIds] = useState<string[]>([]);
   const [researchPlan, setResearchPlan] = useState<ResearchPlanState | null>(null);
   const [pendingResearchPlanQuery, setPendingResearchPlanQuery] = useState<string>("");
+  const [claimMatches, setClaimMatches] = useState<ClaimMatch[]>([]);
+  const [claimRefinedQuestion, setClaimRefinedQuestion] = useState<string>("");
+  const [claimRetrievalQueries, setClaimRetrievalQueries] = useState<string[]>([]);
+  const [claimKeywords, setClaimKeywords] = useState<string[]>([]);
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSources = useMemo(
     () => results.filter((source) => selectedSourceIds.includes(source.id)),
     [results, selectedSourceIds]
+  );
+  const claimMatchBySourceId = useMemo(
+    () => new Map(claimMatches.map((match) => [match.sourceId, match])),
+    [claimMatches]
   );
   const savedSourceOpenAlexIds = useMemo(
     () => new Set(savedSources.map((item) => item.openAlexId)),
@@ -284,6 +296,22 @@ export default function Home() {
 
     void loadAccountData();
   }, [sessionStatus]);
+
+  useEffect(() => {
+    if (startMode !== "query-to-research-plan") {
+      setResearchPlan(null);
+      setPlanErrorMessage(null);
+      setPendingResearchPlanQuery("");
+    }
+
+    if (startMode !== "claim-to-source") {
+      setClaimMatches([]);
+      setClaimRefinedQuestion("");
+      setClaimRetrievalQueries([]);
+      setClaimKeywords([]);
+      setClaimMatchError(null);
+    }
+  }, [startMode]);
 
   async function loadAccountData() {
     setIsAccountDataLoading(true);
@@ -603,6 +631,73 @@ export default function Home() {
     }
   }
 
+  async function requestClaimMatches(trimmedClaim: string) {
+    if (!trimmedClaim) {
+      setErrorMessage("Enter a claim before matching sources.");
+      return;
+    }
+
+    setIsClaimMatching(true);
+    setErrorMessage(null);
+    setPlanErrorMessage(null);
+    setResearchPlan(null);
+    setPendingResearchPlanQuery("");
+    setClaimMatchError(null);
+    setHasSearched(true);
+
+    try {
+      const response = await fetch("/api/claim-match", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ claim: trimmedClaim }),
+      });
+
+      const payload = (await response.json()) as {
+        ok: boolean;
+        data?: ClaimMatchSearchResponse;
+        error?: {
+          code: string;
+          message: string;
+        };
+      };
+
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Claim matching failed.");
+      }
+
+      setResults(payload.data.sources);
+      setClaimMatches(payload.data.matches);
+      setClaimRefinedQuestion(payload.data.refinedQuestion);
+      setClaimRetrievalQueries(payload.data.retrievalQueries);
+      setClaimKeywords(payload.data.keywords);
+      setClaimMatchError(payload.data.matchError ?? null);
+      setExpandedSourceIds([]);
+      setSelectedSourceIds([]);
+      setCitationTextsBySource({});
+      setCitationErrorsBySource({});
+      setCopyStatusBySource({});
+      setCitationLoadingSourceId(null);
+      setBatchCitations([]);
+      setBatchCitationError(null);
+      setBatchCopyStatus("idle");
+    } catch (error) {
+      setClaimMatches([]);
+      setClaimRefinedQuestion("");
+      setClaimRetrievalQueries([]);
+      setClaimKeywords([]);
+      setClaimMatchError(
+        error instanceof Error
+          ? `${error.message} Falling back to a standard search.`
+          : "Unable to rank claim matches right now. Falling back to a standard search."
+      );
+      await performSearch(trimmedClaim);
+    } finally {
+      setIsClaimMatching(false);
+    }
+  }
+
   async function runSearch() {
     await performSearch(query);
   }
@@ -652,6 +747,11 @@ export default function Home() {
     const trimmedQuery = query.trim();
     if (startMode === "query-to-research-plan") {
       await requestResearchPlan(trimmedQuery);
+      return;
+    }
+
+    if (startMode === "claim-to-source") {
+      await requestClaimMatches(trimmedQuery);
       return;
     }
 
@@ -1061,10 +1161,18 @@ export default function Home() {
               />
               <button
                 type="submit"
-                disabled={isLoading || isPlanning}
+                disabled={isLoading || isPlanning || isClaimMatching}
                 className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {isLoading ? "Searching..." : isPlanning ? "Planning..." : "Search"}
+                {isLoading
+                  ? "Searching..."
+                  : isPlanning
+                    ? "Planning..."
+                    : isClaimMatching
+                      ? "Matching..."
+                      : startMode === "claim-to-source"
+                        ? "Match claim"
+                        : "Search"}
               </button>
             </div>
           </div>
@@ -1153,6 +1261,79 @@ export default function Home() {
           <p className="mt-2 text-xs">
             The app automatically continued with a standard search so your workflow is not blocked.
           </p>
+        </section>
+      ) : null}
+
+      {startMode === "claim-to-source" && (claimMatches.length > 0 || claimRetrievalQueries.length > 0 || claimMatchError) ? (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Claim matches</h2>
+              <p className="mt-1 text-sm text-slate-700">
+                Ranked sources for the claim you entered. Pick a retrieval query to continue searching.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void requestClaimMatches(query.trim());
+              }}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+            >
+              Retry claim matching
+            </button>
+          </div>
+
+          {claimMatchError ? (
+            <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {claimMatchError}
+            </p>
+          ) : null}
+
+          {claimRefinedQuestion ? (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                Refined question
+              </p>
+              <p className="mt-2 text-sm text-slate-800">{claimRefinedQuestion}</p>
+            </div>
+          ) : null}
+
+          {claimKeywords.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Keywords</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {claimKeywords.map((keyword) => (
+                  <span key={keyword} className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {claimRetrievalQueries.length > 0 ? (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                Retrieval queries
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {claimRetrievalQueries.map((retrievalQuery) => (
+                  <button
+                    key={retrievalQuery}
+                    type="button"
+                    onClick={() => {
+                      setQuery(retrievalQuery);
+                      void performSearch(retrievalQuery);
+                    }}
+                    className="rounded-full border border-slate-300 px-3 py-2 text-sm text-slate-800 hover:bg-slate-100"
+                  >
+                    Search: {retrievalQuery}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -1451,6 +1632,29 @@ export default function Home() {
                   Select
                 </label>
               </div>
+
+              {startMode === "claim-to-source" ? (() => {
+                const claimMatch = claimMatchBySourceId.get(source.id);
+                if (!claimMatch) {
+                  return null;
+                }
+
+                return (
+                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                      <span>Claim match</span>
+                      <span className="rounded-full bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
+                        Score {claimMatch.score.toFixed(0)}
+                      </span>
+                      <span className="rounded-full bg-white px-2 py-1 normal-case tracking-normal text-slate-800">
+                        {claimMatch.confidence}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-800">{claimMatch.rationale}</p>
+                  </div>
+                );
+              })() : null}
+
               <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
                 <div>
                   <dt className="font-semibold text-slate-900">Authors</dt>
