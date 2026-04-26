@@ -83,6 +83,18 @@ function normalizeExternalUrl(...values: Array<string | null | undefined>) {
   return "";
 }
 
+function getAccessType(work: OpenAlexWork): "free" | "paid" | "unknown" {
+  if (work.primary_location?.pdf_url) {
+    return "free";
+  }
+
+  if (work.primary_location?.landing_page_url) {
+    return "paid";
+  }
+
+  return "unknown";
+}
+
 function buildCacheKey(query: string, page: number, perPage: number) {
   return `${query.toLowerCase()}::${page}::${perPage}`;
 }
@@ -151,6 +163,7 @@ function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
     authors,
     publicationDate: work.publication_date ?? "",
     citationCount: work.cited_by_count ?? 0,
+    accessType: getAccessType(work),
     externalUrl: normalizeExternalUrl(
       work.primary_location?.landing_page_url,
       work.primary_location?.pdf_url,

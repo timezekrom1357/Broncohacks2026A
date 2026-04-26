@@ -159,6 +159,15 @@ const MODE_HELP: Record<StartMode, string> = {
 };
 
 const RESULT_LIMIT_OPTIONS = [10, 15, 25, 50] as const;
+const RESULT_SORT_OPTIONS = [
+  { value: "recommended", label: "Recommended" },
+  { value: "free-source", label: "Free source first" },
+  { value: "paid-source", label: "Paid source first" },
+  { value: "citation-count", label: "Citation count" },
+  { value: "publication-date", label: "Publication date" },
+] as const;
+
+type ResultSortOption = (typeof RESULT_SORT_OPTIONS)[number]["value"];
 
 function formatPublicationDate(rawDate: string) {
   if (!rawDate) {
@@ -229,6 +238,7 @@ export default function Home() {
   const [resultsLimit, setResultsLimit] = useState<(typeof RESULT_LIMIT_OPTIONS)[number]>(15);
   const [resultsTotalCount, setResultsTotalCount] = useState(0);
   const [resultsHasMore, setResultsHasMore] = useState(false);
+  const [resultSort, setResultSort] = useState<ResultSortOption>("recommended");
   const [isLoading, setIsLoading] = useState(false);
   const [isPlanning, setIsPlanning] = useState(false);
   const [isClaimMatching, setIsClaimMatching] = useState(false);
@@ -301,6 +311,61 @@ export default function Home() {
     () => Math.max(1, Math.ceil((resultsTotalCount || results.length) / resultsLimit)),
     [resultsLimit, results.length, resultsTotalCount]
   );
+
+  const sortedResults = useMemo(() => {
+    const accessRank: Record<NonNullable<Source["accessType"]>, number> = {
+      free: 0,
+      paid: 1,
+      unknown: 2,
+    };
+
+    const parsedPublicationDate = (value: string) => {
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+
+    const sortedItems = [...results].sort((left, right) => {
+      if (resultSort === "free-source") {
+        const accessDiff = accessRank[left.accessType ?? "unknown"] - accessRank[right.accessType ?? "unknown"];
+        if (accessDiff !== 0) {
+          return accessDiff;
+        }
+      }
+
+      if (resultSort === "paid-source") {
+        const accessDiff = accessRank[right.accessType ?? "unknown"] - accessRank[left.accessType ?? "unknown"];
+        if (accessDiff !== 0) {
+          return accessDiff;
+        }
+      }
+
+      if (resultSort === "citation-count") {
+        if (left.citationCount !== right.citationCount) {
+          return right.citationCount - left.citationCount;
+        }
+      }
+
+      if (resultSort === "publication-date") {
+        const dateDiff = parsedPublicationDate(right.publicationDate) - parsedPublicationDate(left.publicationDate);
+        if (dateDiff !== 0) {
+          return dateDiff;
+        }
+      }
+
+      if (left.citationCount !== right.citationCount) {
+        return right.citationCount - left.citationCount;
+      }
+
+      const dateDiff = parsedPublicationDate(right.publicationDate) - parsedPublicationDate(left.publicationDate);
+      if (dateDiff !== 0) {
+        return dateDiff;
+      }
+
+      return left.title.localeCompare(right.title);
+    });
+
+    return sortedItems;
+  }, [results, resultSort]);
 
   useEffect(() => {
     setGuestCitationHistory(readGuestCitationHistory());
@@ -1732,6 +1797,21 @@ export default function Home() {
               </div>
               <div className="flex flex-col gap-3 sm:items-end">
                 <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-semibold text-slate-700" htmlFor="results-sort">
+                    Sort by
+                  </label>
+                  <select
+                    id="results-sort"
+                    value={resultSort}
+                    onChange={(event) => setResultSort(event.target.value as ResultSortOption)}
+                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
+                  >
+                    {RESULT_SORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                   <label className="text-xs font-semibold text-slate-700" htmlFor="results-limit">
                     Results per page
                   </label>
@@ -1782,9 +1862,9 @@ export default function Home() {
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap gap-2">
-                <button
+                  <button
                   type="button"
-                  onClick={() => setSelectedSourceIds(results.map((source) => source.id))}
+                    onClick={() => setSelectedSourceIds(sortedResults.map((source) => source.id))}
                   className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
                 >
                   Select all
@@ -1849,7 +1929,7 @@ export default function Home() {
             ) : null}
           </div>
 
-          {results.map((source) => (
+          {sortedResults.map((source) => (
             <article
               key={source.id}
               className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
