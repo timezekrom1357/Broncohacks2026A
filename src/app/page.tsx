@@ -11,17 +11,10 @@ import {
   type CitationStyle,
   type StartMode,
 } from "@/lib/constants";
-import {
-  appendGuestCitationHistory,
-  clearGuestCitationHistory,
-  createGuestCitationHistoryItem,
-  readGuestCitationHistory,
-} from "@/lib/guest-citation-history";
 import type {
   ClaimMatch,
   ClaimMatchSearchResponse,
   EnhancedQueryItem,
-  GuestCitationHistoryItem,
   SavedCitation,
   SavedSource,
   SearchHistoryItem,
@@ -256,11 +249,13 @@ export default function Home() {
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [batchCitations, setBatchCitations] = useState<BatchCitationItem[]>([]);
   const [isBatchCitationLoading, setIsBatchCitationLoading] = useState(false);
+  const [isBatchCitationSaving, setIsBatchCitationSaving] = useState(false);
   const [batchCitationError, setBatchCitationError] = useState<string | null>(null);
   const [batchCopyStatus, setBatchCopyStatus] = useState<"idle" | "success" | "error">(
     "idle"
   );
-  const [guestCitationHistory, setGuestCitationHistory] = useState<GuestCitationHistoryItem[]>([]);
+  const [batchSaveStatus, setBatchSaveStatus] = useState<"idle" | "success" | "error">("idle");
+  const [batchSaveError, setBatchSaveError] = useState<string | null>(null);
   const [signUpEmail, setSignUpEmail] = useState("");
   const [signUpPassword, setSignUpPassword] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
@@ -351,10 +346,6 @@ export default function Home() {
     () => sortedResults.filter((source) => selectedSourceIds.includes(source.id)),
     [selectedSourceIds, sortedResults]
   );
-
-  useEffect(() => {
-    setGuestCitationHistory(readGuestCitationHistory());
-  }, []);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -1135,17 +1126,6 @@ export default function Home() {
         ...current,
         [source.id]: payload.data?.citationText ?? "",
       }));
-
-      if (sessionStatus !== "authenticated") {
-        const item = createGuestCitationHistoryItem({
-          sourceId: source.id,
-          sourceTitle: source.title,
-          style: payload.data.style,
-          citationText: payload.data.citationText,
-        });
-
-        setGuestCitationHistory(appendGuestCitationHistory(item));
-      }
     } catch (error) {
       setCitationTextsBySource((current) => ({ ...current, [source.id]: "" }));
       setCitationErrorsBySource((current) => ({
@@ -1197,6 +1177,8 @@ export default function Home() {
     setIsBatchCitationLoading(true);
     setBatchCitationError(null);
     setBatchCopyStatus("idle");
+    setBatchSaveStatus("idle");
+    setBatchSaveError(null);
 
     try {
       const citationPromises = selectedSources.map(async (source) => {
@@ -1242,6 +1224,64 @@ export default function Home() {
     }
   }
 
+  async function saveBatchCitationsForUser() {
+    if (sessionStatus !== "authenticated") {
+      return;
+    }
+
+    if (batchCitations.length === 0) {
+      setBatchSaveError("Generate a citation list before saving.");
+      setBatchSaveStatus("error");
+      return;
+    }
+
+    setIsBatchCitationSaving(true);
+    setBatchSaveStatus("idle");
+    setBatchSaveError(null);
+    setAccountDataError(null);
+
+    try {
+      const savedItems = await Promise.all(
+        batchCitations.map(async (item) => {
+          const response = await fetch("/api/saved-citations", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              sourceId: item.sourceId,
+              sourceTitle: item.sourceTitle,
+              style: citationStyle,
+              citationText: item.citationText,
+            }),
+          });
+
+          const payload = (await response.json()) as SavedCitationMutationResponse;
+          if (!response.ok || !payload.ok || !payload.data) {
+            throw new Error(payload.error?.message || "Unable to save citation list.");
+          }
+
+          return payload.data.item;
+        })
+      );
+
+      setSavedCitations((current) => {
+        const incomingById = new Map(savedItems.map((item) => [item.id, item]));
+        const rest = current.filter((item) => !incomingById.has(item.id));
+        return [...savedItems, ...rest];
+      });
+      setBatchSaveStatus("success");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to save citation list right now.";
+      setBatchSaveStatus("error");
+      setBatchSaveError(message);
+      setAccountDataError(message);
+    } finally {
+      setIsBatchCitationSaving(false);
+    }
+  }
+
   async function copyBatchCitationList() {
     if (batchCitations.length === 0) {
       return;
@@ -1255,11 +1295,6 @@ export default function Home() {
     } catch {
       setBatchCopyStatus("error");
     }
-  }
-
-  function clearGuestCitationHistoryList() {
-    clearGuestCitationHistory();
-    setGuestCitationHistory([]);
   }
 
   async function onSignUpSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1675,44 +1710,6 @@ export default function Home() {
         </section>
       ) : null}
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Guest citation history</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Stored locally on this device using browser local storage.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={clearGuestCitationHistoryList}
-            disabled={guestCitationHistory.length === 0}
-            className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Clear history
-          </button>
-        </div>
-
-        {guestCitationHistory.length === 0 ? (
-          <p className="mt-4 text-sm text-slate-600">
-            No guest citation history yet. Generated citations will appear here.
-          </p>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {guestCitationHistory.map((item) => (
-              <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-700">
-                  <span className="rounded bg-white px-2 py-1">{item.style}</span>
-                  <span>{formatHistoryTimestamp(item.createdAt)}</span>
-                </div>
-                <p className="mt-2 text-sm font-semibold text-slate-900">{item.sourceTitle}</p>
-                <p className="mt-1 text-sm text-slate-800">{item.citationText}</p>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
       {sessionStatus === "authenticated" ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2103,11 +2100,29 @@ export default function Home() {
                 >
                   Copy full citation list
                 </button>
+                {sessionStatus === "authenticated" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void saveBatchCitationsForUser();
+                    }}
+                    disabled={isBatchCitationSaving}
+                    className="mt-2 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {isBatchCitationSaving ? "Saving list..." : "Save citation list"}
+                  </button>
+                ) : null}
                 {batchCopyStatus === "success" ? (
                   <p className="mt-2 text-xs text-emerald-700">Citation list copied.</p>
                 ) : null}
                 {batchCopyStatus === "error" ? (
                   <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                ) : null}
+                {batchSaveStatus === "success" ? (
+                  <p className="mt-2 text-xs text-emerald-700">Citation list saved to Saved citations.</p>
+                ) : null}
+                {batchSaveStatus === "error" && batchSaveError ? (
+                  <p className="mt-2 text-xs text-rose-700">{batchSaveError}</p>
                 ) : null}
               </div>
             ) : null}
@@ -2307,6 +2322,35 @@ export default function Home() {
               ) : null}
             </article>
           ))}
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {resultsPage > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void rerunCurrentQuery(resultsPage - 1, resultsLimit);
+                  }}
+                  disabled={isLoading || isClaimMatching}
+                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+              ) : null}
+              {resultsHasMore || resultsPage < totalResultPages ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void rerunCurrentQuery(resultsPage + 1, resultsLimit);
+                  }}
+                  disabled={isLoading || isClaimMatching}
+                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              ) : null}
+            </div>
+          </div>
         </section>
       ) : null}
     </main>
