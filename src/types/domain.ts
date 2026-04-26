@@ -49,3 +49,38 @@ export interface SearchHistoryItem {
   startMode: StartMode;
   createdAt: string;
 }
+
+export interface EnhancedQueryItem {
+  id: string;
+  userId: string;
+  originalQuery: string;
+  refinedQuestion: string;
+  suggestedQueries: string[];
+  selectedQuery: string;
+  claimText: string;
+  claimMatches: ClaimMatch[];
+  createdAt: string;
+}
+
+export interface SavedSource {
+  id: string;
+  userId: string;
+  openAlexId: string;
+  title: string;
+  authors: string[];
+  publicationDate: string;
+  citationCount: number;
+  externalUrl: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface SavedCitation {
+  id: string;
+  userId: string;
+  sourceId: string;
+  sourceTitle: string;
+  style: CitationStyle;
+  citationText: string;
+  createdAt: string;
+}

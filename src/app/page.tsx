@@ -17,7 +17,14 @@ import {
   createGuestCitationHistoryItem,
   readGuestCitationHistory,
 } from "@/lib/guest-citation-history";
-import type { GuestCitationHistoryItem, Source } from "@/types/domain";
+import type {
+  EnhancedQueryItem,
+  GuestCitationHistoryItem,
+  SavedCitation,
+  SavedSource,
+  SearchHistoryItem,
+  Source,
+} from "@/types/domain";
 
 interface SearchResponse {
   ok: boolean;
@@ -44,6 +51,62 @@ interface SignUpResponse {
   ok: boolean;
   data?: {
     message: string;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface SavedSourcesResponse {
+  ok: boolean;
+  data?: {
+    items: SavedSource[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface SavedCitationsResponse {
+  ok: boolean;
+  data?: {
+    items: SavedCitation[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface HistoryResponse {
+  ok: boolean;
+  data?: {
+    searchHistory: SearchHistoryItem[];
+    enhancedQueries: EnhancedQueryItem[];
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface SavedSourceMutationResponse {
+  ok: boolean;
+  data?: {
+    item: SavedSource;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface SavedCitationMutationResponse {
+  ok: boolean;
+  data?: {
+    item: SavedCitation;
   };
   error?: {
     code: string;
@@ -158,16 +221,316 @@ export default function Home() {
   const [isSigningUp, setIsSigningUp] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [savedSources, setSavedSources] = useState<SavedSource[]>([]);
+  const [savedCitations, setSavedCitations] = useState<SavedCitation[]>([]);
+  const [searchHistory, setSearchHistory] = useState<SearchHistoryItem[]>([]);
+  const [enhancedQueries, setEnhancedQueries] = useState<EnhancedQueryItem[]>([]);
+  const [isAccountDataLoading, setIsAccountDataLoading] = useState(false);
+  const [accountDataError, setAccountDataError] = useState<string | null>(null);
+  const [isDeleteAccountLoading, setIsDeleteAccountLoading] = useState(false);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [savingSourceIds, setSavingSourceIds] = useState<string[]>([]);
+  const [savingCitationSourceIds, setSavingCitationSourceIds] = useState<string[]>([]);
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSources = useMemo(
     () => results.filter((source) => selectedSourceIds.includes(source.id)),
     [results, selectedSourceIds]
   );
+  const savedSourceOpenAlexIds = useMemo(
+    () => new Set(savedSources.map((item) => item.openAlexId)),
+    [savedSources]
+  );
 
   useEffect(() => {
     setGuestCitationHistory(readGuestCitationHistory());
   }, []);
+
+  useEffect(() => {
+    if (sessionStatus !== "authenticated") {
+      setSavedSources([]);
+      setSavedCitations([]);
+      setSearchHistory([]);
+      setEnhancedQueries([]);
+      setAccountDataError(null);
+      return;
+    }
+
+    void loadAccountData();
+  }, [sessionStatus]);
+
+  async function loadAccountData() {
+    setIsAccountDataLoading(true);
+    setAccountDataError(null);
+
+    try {
+      const [savedSourcesResponse, savedCitationsResponse, historyResponse] = await Promise.all([
+        fetch("/api/saved-sources"),
+        fetch("/api/saved-citations"),
+        fetch("/api/history"),
+      ]);
+
+      const savedSourcesPayload = (await savedSourcesResponse.json()) as SavedSourcesResponse;
+      const savedCitationsPayload =
+        (await savedCitationsResponse.json()) as SavedCitationsResponse;
+      const historyPayload = (await historyResponse.json()) as HistoryResponse;
+
+      if (
+        !savedSourcesResponse.ok ||
+        !savedSourcesPayload.ok ||
+        !savedSourcesPayload.data ||
+        !savedCitationsResponse.ok ||
+        !savedCitationsPayload.ok ||
+        !savedCitationsPayload.data ||
+        !historyResponse.ok ||
+        !historyPayload.ok ||
+        !historyPayload.data
+      ) {
+        throw new Error(
+          savedSourcesPayload.error?.message ||
+            savedCitationsPayload.error?.message ||
+            historyPayload.error?.message ||
+            "Unable to load account data."
+        );
+      }
+
+      setSavedSources(savedSourcesPayload.data.items);
+      setSavedCitations(savedCitationsPayload.data.items);
+      setSearchHistory(historyPayload.data.searchHistory);
+      setEnhancedQueries(historyPayload.data.enhancedQueries);
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to load account data right now."
+      );
+    } finally {
+      setIsAccountDataLoading(false);
+    }
+  }
+
+  async function saveSourceForUser(source: Source) {
+    if (sessionStatus !== "authenticated") {
+      return;
+    }
+
+    setSavingSourceIds((current) => [...current, source.id]);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/saved-sources", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ source }),
+      });
+
+      const payload = (await response.json()) as SavedSourceMutationResponse;
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Unable to save source.");
+      }
+
+      const savedItem = payload.data.item;
+
+      setSavedSources((current) => {
+        const withoutExisting = current.filter(
+          (item) => item.openAlexId !== savedItem.openAlexId
+        );
+        return [savedItem, ...withoutExisting];
+      });
+    } catch (error) {
+      setAccountDataError(error instanceof Error ? error.message : "Unable to save source.");
+    } finally {
+      setSavingSourceIds((current) => current.filter((id) => id !== source.id));
+    }
+  }
+
+  async function saveCitationForUser(source: Source) {
+    if (sessionStatus !== "authenticated") {
+      return;
+    }
+
+    const citationText = citationTextsBySource[source.id] ?? "";
+    if (!citationText) {
+      setAccountDataError("Generate a citation before saving it.");
+      return;
+    }
+
+    setSavingCitationSourceIds((current) => [...current, source.id]);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/saved-citations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sourceId: source.id,
+          sourceTitle: source.title,
+          style: citationStyle,
+          citationText,
+        }),
+      });
+
+      const payload = (await response.json()) as SavedCitationMutationResponse;
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Unable to save citation.");
+      }
+
+      const savedItem = payload.data.item;
+
+      setSavedCitations((current) => [savedItem, ...current]);
+    } catch (error) {
+      setAccountDataError(error instanceof Error ? error.message : "Unable to save citation.");
+    } finally {
+      setSavingCitationSourceIds((current) => current.filter((id) => id !== source.id));
+    }
+  }
+
+  async function deleteSavedSourceItem(itemId: string) {
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch(`/api/saved-sources/${encodeURIComponent(itemId)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to delete saved source.");
+      }
+
+      setSavedSources((current) => current.filter((item) => item.id !== itemId));
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to delete saved source."
+      );
+    }
+  }
+
+  async function deleteSavedCitationItem(itemId: string) {
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch(`/api/saved-citations/${encodeURIComponent(itemId)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to delete saved citation.");
+      }
+
+      setSavedCitations((current) => current.filter((item) => item.id !== itemId));
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to delete saved citation."
+      );
+    }
+  }
+
+  async function deleteHistoryItem(itemId: string, type: "search" | "enhanced") {
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch(
+        `/api/history/${encodeURIComponent(itemId)}?type=${encodeURIComponent(type)}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to delete history item.");
+      }
+
+      if (type === "search") {
+        setSearchHistory((current) => current.filter((item) => item.id !== itemId));
+        return;
+      }
+
+      setEnhancedQueries((current) => current.filter((item) => item.id !== itemId));
+    } catch (error) {
+      setAccountDataError(
+        error instanceof Error ? error.message : "Unable to delete history item."
+      );
+    }
+  }
+
+  async function clearUserHistory() {
+    setIsClearingHistory(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/history", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to clear history.");
+      }
+
+      setSearchHistory([]);
+      setEnhancedQueries([]);
+    } catch (error) {
+      setAccountDataError(error instanceof Error ? error.message : "Unable to clear history.");
+    } finally {
+      setIsClearingHistory(false);
+    }
+  }
+
+  async function deleteAccount() {
+    if (!window.confirm("Delete your account and all saved data permanently?")) {
+      return;
+    }
+
+    setIsDeleteAccountLoading(true);
+    setAccountDataError(null);
+
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as {
+          error?: {
+            message?: string;
+          };
+        };
+        throw new Error(payload.error?.message || "Unable to delete account.");
+      }
+
+      await signOut({ redirect: false });
+      setAuthMessage("Account deleted successfully.");
+      setSavedSources([]);
+      setSavedCitations([]);
+      setSearchHistory([]);
+      setEnhancedQueries([]);
+    } catch (error) {
+      setAccountDataError(error instanceof Error ? error.message : "Unable to delete account.");
+    } finally {
+      setIsDeleteAccountLoading(false);
+    }
+  }
 
   async function runSearch() {
     const trimmedQuery = query.trim();
@@ -181,7 +544,9 @@ export default function Home() {
     setHasSearched(true);
 
     try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(trimmedQuery)}`);
+      const response = await fetch(
+        `/api/search?q=${encodeURIComponent(trimmedQuery)}&startMode=${encodeURIComponent(startMode)}`
+      );
       const payload = (await response.json()) as SearchResponse;
 
       if (!response.ok || !payload.ok || !payload.data) {
@@ -451,16 +816,38 @@ export default function Home() {
             <p className="text-sm text-slate-700">
               Signed in as <span className="font-semibold text-slate-900">{session.user.email}</span>
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                void onLogout();
-              }}
-              disabled={isLoggingOut}
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {isLoggingOut ? "Logging out..." : "Log out"}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  void loadAccountData();
+                }}
+                disabled={isAccountDataLoading}
+                className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isAccountDataLoading ? "Refreshing..." : "Refresh account data"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void onLogout();
+                }}
+                disabled={isLoggingOut}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isLoggingOut ? "Logging out..." : "Log out"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void deleteAccount();
+                }}
+                disabled={isDeleteAccountLoading}
+                className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isDeleteAccountLoading ? "Deleting account..." : "Delete account"}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="mt-4 grid gap-6 md:grid-cols-2">
@@ -629,6 +1016,142 @@ export default function Home() {
         )}
       </section>
 
+      {sessionStatus === "authenticated" ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Saved data and history</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Manage saved sources, saved citations, and search history.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void clearUserHistory();
+              }}
+              disabled={isClearingHistory}
+              className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isClearingHistory ? "Clearing history..." : "Clear history"}
+            </button>
+          </div>
+
+          {accountDataError ? <p className="mt-3 text-sm text-rose-700">{accountDataError}</p> : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-900">Search history ({searchHistory.length})</h3>
+              {searchHistory.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-600">No saved search history yet.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {searchHistory.map((item) => (
+                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
+                      <p className="text-xs font-semibold text-slate-900">{item.query}</p>
+                      <p className="mt-1 text-xs text-slate-600">{item.startMode}</p>
+                      <p className="text-xs text-slate-500">{formatHistoryTimestamp(item.createdAt)}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void deleteHistoryItem(item.id, "search");
+                        }}
+                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-900">Saved sources ({savedSources.length})</h3>
+              {savedSources.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-600">No saved sources yet.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {savedSources.map((item) => (
+                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
+                      <p className="text-xs font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">{formatHistoryTimestamp(item.createdAt)}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void deleteSavedSourceItem(item.id);
+                        }}
+                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Saved citations ({savedCitations.length})
+              </h3>
+              {savedCitations.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-600">No saved citations yet.</p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {savedCitations.map((item) => (
+                    <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
+                      <p className="text-xs font-semibold text-slate-900">{item.sourceTitle}</p>
+                      <p className="mt-1 text-xs text-slate-700">{item.citationText}</p>
+                      <p className="mt-1 text-xs text-slate-500">{item.style}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void deleteSavedCitationItem(item.id);
+                        }}
+                        className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+
+          <article className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <h3 className="text-sm font-semibold text-slate-900">
+              Enhanced queries ({enhancedQueries.length})
+            </h3>
+            {enhancedQueries.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-600">No enhanced query history yet.</p>
+            ) : (
+              <div className="mt-2 space-y-2">
+                {enhancedQueries.map((item) => (
+                  <div key={item.id} className="rounded border border-slate-200 bg-white p-2">
+                    <p className="text-xs font-semibold text-slate-900">{item.originalQuery}</p>
+                    <p className="mt-1 text-xs text-slate-700">{item.refinedQuestion}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {formatHistoryTimestamp(item.createdAt)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void deleteHistoryItem(item.id, "enhanced");
+                      }}
+                      className="mt-2 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        </section>
+      ) : null}
+
       {isLoading ? (
         <LoadingState
           title="Searching OpenAlex"
@@ -792,6 +1315,23 @@ export default function Home() {
                 {expandedSourceIds.includes(source.id) ? "Close details" : "Open details"}
               </button>
 
+              {sessionStatus === "authenticated" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void saveSourceForUser(source);
+                  }}
+                  disabled={savingSourceIds.includes(source.id)}
+                  className="mt-2 ml-2 rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {savingSourceIds.includes(source.id)
+                    ? "Saving source..."
+                    : savedSourceOpenAlexIds.has(source.id)
+                      ? "Source saved"
+                      : "Save source"}
+                </button>
+              ) : null}
+
               {expandedSourceIds.includes(source.id) ? (
                 <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <h3 className="text-base font-semibold text-slate-900">Source detail</h3>
@@ -865,6 +1405,20 @@ export default function Home() {
                         ) : null}
                         {copyStatusBySource[source.id] === "error" ? (
                           <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                        ) : null}
+                        {sessionStatus === "authenticated" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void saveCitationForUser(source);
+                            }}
+                            disabled={savingCitationSourceIds.includes(source.id)}
+                            className="mt-2 rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {savingCitationSourceIds.includes(source.id)
+                              ? "Saving citation..."
+                              : "Save citation"}
+                          </button>
                         ) : null}
                       </div>
                     ) : null}
